@@ -258,7 +258,7 @@ pub fn segmented_toggle(ui: &mut egui::Ui, labels: &[&str], active: usize) -> Op
         .corner_radius(3.0)
         .inner_margin(Margin::same(2))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::left_to_right(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 for (idx, &label) in labels.iter().enumerate() {
                     let selected = idx == active;
