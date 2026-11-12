@@ -37,9 +37,7 @@ enum RowItem {
 #[derive(Clone, Copy)]
 enum Command {
     Open,
-    OpenTxd,
     AddArchive,
-    OpenFolderImgs,
     Folder,
     Pack,
     Add,
@@ -115,7 +113,7 @@ impl Browser {
             Command::Open => {
                 if let Some(paths) = rfd::FileDialog::new()
                     .add_filter("IMG и TXD ресурсы", &["img", "txd"])
-                    .add_filter("IMG archives", &["img"])
+                    .add_filter("IMG архивы", &["img"])
                     .add_filter("RenderWare TXD", &["txd"])
                     .set_directory(&self.folder)
                     .pick_files()
@@ -135,40 +133,13 @@ impl Browser {
                     }
                 }
             }
-            Command::OpenTxd => {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("RenderWare TXD", &["txd"])
-                    .set_directory(&self.folder)
-                    .pick_file()
-                {
-                    self.open_txd_file(path, ctx);
-                }
-            }
             Command::AddArchive => {
                 if let Some(paths) = rfd::FileDialog::new()
-                    .add_filter("IMG archives", &["img"])
+                    .add_filter("IMG архивы", &["img"])
                     .set_directory(&self.folder)
                     .pick_files()
                 {
                     self.open_many(paths, !self.archives.is_empty(), ctx);
-                }
-            }
-            Command::OpenFolderImgs => {
-                if let Ok(entries) = std::fs::read_dir(&self.folder) {
-                    let mut paths: Vec<PathBuf> = entries
-                        .flatten()
-                        .map(|e| e.path())
-                        .filter(|p| {
-                            p.extension()
-                                .is_some_and(|ext| ext.eq_ignore_ascii_case("img"))
-                        })
-                        .collect();
-                    paths.sort();
-                    if paths.is_empty() {
-                        self.status = "В текущей папке нет IMG архивов.".into();
-                    } else {
-                        self.open_many(paths, false, ctx);
-                    }
                 }
             }
             Command::Folder => {
@@ -683,40 +654,27 @@ impl Browser {
             )
             .show(ctx, |ui| {
                 egui::menu::bar(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
+                    ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
                     ui.menu_button("Файл", |ui| {
                         menu(
                             ui,
-                            "Открыть IMG или TXD…    Ctrl+O",
+                            "Открыть…    Ctrl+O",
                             true,
                             Command::Open,
                             &mut command,
                         );
                         menu(
                             ui,
-                            "Открыть внешний TXD…",
-                            true,
-                            Command::OpenTxd,
-                            &mut command,
-                        );
-                        menu(
-                            ui,
-                            "Добавить архивы во вкладки…",
+                            "Добавить во вкладки…",
                             true,
                             Command::AddArchive,
                             &mut command,
                         );
+                        menu(ui, "Открыть папку…", true, Command::Folder, &mut command);
                         menu(
                             ui,
-                            "Открыть все IMG из папки…",
-                            true,
-                            Command::OpenFolderImgs,
-                            &mut command,
-                        );
-                        ui.separator();
-                        menu(ui, "Обзор папки на диске…", true, Command::Folder, &mut command);
-                        menu(
-                            ui,
-                            "Собрать новый IMG из папки…",
+                            "Собрать IMG из папки…",
                             true,
                             Command::Pack,
                             &mut command,
@@ -724,7 +682,7 @@ impl Browser {
                         ui.separator();
                         menu(
                             ui,
-                            "Сохранить изменения    Ctrl+S",
+                            "Сохранить    Ctrl+S",
                             (has_archives && !self.edits.is_empty()) || standalone_dirty,
                             Command::Save,
                             &mut command,
@@ -739,7 +697,7 @@ impl Browser {
                         ui.separator();
                         menu(
                             ui,
-                            "Закрыть активную вкладку    Ctrl+W",
+                            "Закрыть вкладку    Ctrl+W",
                             has_archives || standalone_open,
                             Command::CloseActive,
                             &mut command,
@@ -748,21 +706,21 @@ impl Browser {
                     ui.menu_button("Правка", |ui| {
                         menu(
                             ui,
-                            "Добавить файлы в архив…    Insert",
+                            "Добавить файлы…    Insert",
                             has_archives,
                             Command::Add,
                             &mut command,
                         );
                         menu(
                             ui,
-                            "Заменить выбранный файл…",
+                            "Заменить файл…",
                             has_archives && self.selection.len() == 1,
                             Command::Replace,
                             &mut command,
                         );
                         menu(
                             ui,
-                            "Удалить выбранное    Delete",
+                            "Удалить    Delete",
                             has_archives && selected,
                             Command::Remove,
                             &mut command,
@@ -782,7 +740,7 @@ impl Browser {
                         ui.separator();
                         menu(
                             ui,
-                            "Отменить все несохранённые правки",
+                            "Сбросить правки",
                             !self.edits.is_empty(),
                             Command::Discard,
                             &mut command,
@@ -796,11 +754,12 @@ impl Browser {
                             Command::Preview,
                             &mut command,
                         );
-                        if ui.radio(!self.show_details, "Режим: Просмотр").clicked() {
+                        ui.separator();
+                        if ui.radio(!self.show_details, "Просмотр").clicked() {
                             self.show_details = false;
                             ui.close_menu();
                         }
-                        if ui.radio(self.show_details, "Режим: Сведения и Hex").clicked() {
+                        if ui.radio(self.show_details, "Сведения и Hex").clicked() {
                             self.show_details = true;
                             ui.close_menu();
                         }
@@ -817,6 +776,7 @@ impl Browser {
                                 ui.close_menu();
                             }
                         }
+                        ui.separator();
                         if ui
                             .add_enabled(
                                 has_archives && self.archives.len() > 1,
@@ -871,7 +831,7 @@ impl Browser {
                         ui.separator();
                         menu(
                             ui,
-                            "Проверить целостность архива",
+                            "Проверить целостность",
                             has_archives,
                             Command::Verify,
                             &mut command,
@@ -879,7 +839,7 @@ impl Browser {
                         if ui
                             .add_enabled(
                                 !self.edits.is_empty(),
-                                egui::Button::new("Очередь несохранённых правок…"),
+                                egui::Button::new("Очередь правок…"),
                             )
                             .clicked()
                         {
@@ -897,13 +857,6 @@ impl Browser {
                         );
                         if ui.button("О программе OpenProvince…").clicked() {
                             self.about_open = true;
-                            ui.close_menu();
-                        }
-                        ui.separator();
-                        if ui.button("GitHub — исходный код").clicked() {
-                            ctx.open_url(egui::OpenUrl::new_tab(
-                                "https://github.com/Vaemoon/OpenProvince",
-                            ));
                             ui.close_menu();
                         }
                     });
@@ -1102,15 +1055,11 @@ impl Browser {
                         {
                             command = Some(Command::Up);
                         }
-                        let open_imgs_w = 132.0;
                         let response = ui.add_sized(
-                            [
-                                (ui.available_width() - open_imgs_w - 8.0).max(120.0),
-                                theme::CONTROL_H,
-                            ],
+                            [(ui.available_width() - 4.0).max(120.0), theme::CONTROL_H],
                             egui::TextEdit::singleline(&mut self.address)
                                 .id_salt("folder_address")
-                                .hint_text("Путь к папке или IMG архиву…"),
+                                .hint_text("Путь к папке, IMG или TXD…"),
                         );
                         if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             let path = PathBuf::from(self.address.trim_matches('"'));
@@ -1119,16 +1068,6 @@ impl Browser {
                             } else {
                                 self.open(path, ctx);
                             }
-                        }
-                        if theme::bordered_button(
-                            ui,
-                            "Открыть все IMG",
-                            Vec2::new(open_imgs_w, theme::CONTROL_H),
-                        )
-                        .on_hover_text("Открыть все IMG из текущей папки")
-                        .clicked()
-                        {
-                            command = Some(Command::OpenFolderImgs);
                         }
                     });
                 }
@@ -1886,17 +1825,12 @@ impl Browser {
                     ui.weak("Архиватор и инспектор ресурсов GTA San Andreas / MTA Province");
                     ui.separator();
                     ui.strong("Навигация и архивы");
-                    ui.label("Ctrl+O — открыть один или несколько IMG / TXD\nCtrl+S — сохранить правки с резервной копией\nCtrl+F — фокус на поиск ресурса (Esc — очистить)\nCtrl+E — извлечь выделенные файлы\nInsert — добавить файлы в архив\nDelete — пометить удаление / удалить текстуру в TXD\nF3 / 2×клик — просмотр ресурса\nAlt+Up — подняться на папку вверх");
+                    ui.label("Ctrl+O — открыть IMG или TXD (можно выбрать несколько)\nCtrl+S — сохранить правки с резервной копией\nCtrl+F — фокус на поиск ресурса (Esc — очистить)\nCtrl+E — извлечь выделенные файлы\nInsert — добавить файлы в архив\nDelete — пометить удаление / удалить текстуру в TXD\nF3 / 2×клик — просмотр ресурса\nAlt+Up — подняться на папку вверх");
                     ui.add_space(6.0);
                     ui.strong("3D-вьюпорт (DFF) и TXD-редактор");
                     ui.label("ЛКМ — вращение модели (или сдвиг текстуры)\nПКМ / СКМ / Shift+ЛКМ — панорамирование 3D-сцены\nКолесо мыши — плавный масштаб\nR / 2×клик — сброс камеры (3D) или 1:1 / Вписать (TXD)\nCtrl+Z / Ctrl+Y — отмена и повтор правок текстур TXD");
                     ui.separator();
-                    ui.weak("Совет: перетащите .img файлы в окно для открытия, или .png/.dds картинки прямо в открытый TXD для замены/добавления текстур.");
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        ui.weak("Ссылки:");
-                        ui.hyperlink_to("GitHub", "https://github.com/Vaemoon/OpenProvince");
-                    });
+                    ui.weak("Совет: перетащите несколько .img в окно для открытия во вкладках, или .png/.dds картинки в открытый TXD для замены текстур.");
                 });
             self.help_open = open;
         }
@@ -1905,7 +1839,7 @@ impl Browser {
             egui::Window::new("О программе")
                 .open(&mut open)
                 .resizable(false)
-                .default_width(400.0)
+                .default_width(390.0)
                 .show(ctx, |ui| {
                     ui.label(egui::RichText::new("OpenProvince").size(18.0).strong());
                     ui.label(
@@ -1914,18 +1848,30 @@ impl Browser {
                             .color(theme::TEXT_SECONDARY),
                     );
                     ui.add_space(4.0);
-                    ui.label("Инструмент для работы с архивами IMG, 3D-моделями DFF и текстурами TXD GTA San Andreas / MTA Province.");
-                    ui.add_space(6.0);
-                    ui.separator();
-                    ui.add_space(4.0);
+                    ui.label("Архиватор и инспектор ресурсов IMG, DFF и TXD для GTA San Andreas и MTA Province.");
+                    ui.add_space(8.0);
+                    theme::hline(ui);
+                    ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Сообщество и код:")
-                                .size(12.0)
-                                .color(theme::TEXT_SECONDARY),
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        theme::link_button(
+                            ui,
+                            theme::Icon::GitHub,
+                            "GitHub",
+                            "https://github.com/Vaemoon/OpenProvince",
                         );
-                        ui.hyperlink_to("GitHub", "https://github.com/Vaemoon/OpenProvince")
-                            .on_hover_text("https://github.com/Vaemoon/OpenProvince");
+                        theme::link_button(
+                            ui,
+                            theme::Icon::Telegram,
+                            "Telegram",
+                            "https://t.me/",
+                        );
+                        theme::link_button(
+                            ui,
+                            theme::Icon::Vk,
+                            "ВКонтакте",
+                            "https://vk.com/",
+                        );
                     });
                 });
             self.about_open = open;
@@ -2151,24 +2097,13 @@ impl Browser {
                                     if theme::tool_button(
                                         ui,
                                         theme::Icon::FolderOpen,
-                                        "Открыть IMG…",
-                                        "Ctrl+O",
+                                        "Открыть…",
+                                        "Открыть IMG или TXD (Ctrl+O)",
                                         !self.busy,
                                     )
                                     .clicked()
                                     {
                                         self.command(Command::Open, ctx);
-                                    }
-                                    if theme::tool_button(
-                                        ui,
-                                        theme::Icon::Image,
-                                        "Открыть TXD…",
-                                        "Открыть отдельный словарь текстур",
-                                        !self.busy,
-                                    )
-                                    .clicked()
-                                    {
-                                        self.command(Command::OpenTxd, ctx);
                                     }
                                     if theme::tool_button(
                                         ui,

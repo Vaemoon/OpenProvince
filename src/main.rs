@@ -99,6 +99,8 @@ struct Browser {
     edits: Vec<Edit>,
     initial_selection: Option<String>,
     initial_variant: Option<String>,
+    last_window_title: String,
+    native_chrome_applied: bool,
     sender: mpsc::Sender<Message>,
     receiver: mpsc::Receiver<Message>,
 }
@@ -161,8 +163,44 @@ impl Browser {
             edits: Vec::new(),
             initial_selection: None,
             initial_variant: None,
+            last_window_title: String::new(),
+            native_chrome_applied: false,
             sender,
             receiver,
+        }
+    }
+
+    fn sync_window_title(&mut self, ctx: &egui::Context) {
+        let app = concat!("OpenProvince ", env!("CARGO_PKG_VERSION"));
+        let dirty = !self.edits.is_empty()
+            || self.txd_editor.as_ref().is_some_and(|e| e.disk_dirty);
+        let prefix = if dirty { "(Не сохранено) " } else { "" };
+        let title = if let Some(txd_path) = &self.standalone_txd
+            && self
+                .txd_editor
+                .as_ref()
+                .is_some_and(|e| e.disk_path.is_some())
+        {
+            let name = txd_path
+                .file_name()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_else(|| "texture.txd".into());
+            format!("{prefix}{name} — {app}")
+        } else if !self.archives.is_empty() {
+            let active = self.archive_label(self.active_archive);
+            if self.archives.len() > 1 {
+                format!("{prefix}{active} (+{}) — {app}", self.archives.len() - 1)
+            } else {
+                format!("{prefix}{active} — {app}")
+            }
+        } else if let Some(folder_name) = self.folder.file_name().filter(|n| !n.is_empty()) {
+            format!("{} — {app}", folder_name.to_string_lossy())
+        } else {
+            app.to_owned()
+        };
+        if title != self.last_window_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.last_window_title = title;
         }
     }
 
@@ -874,6 +912,11 @@ impl Browser {
 
 impl eframe::App for Browser {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+        if !self.native_chrome_applied {
+            #[cfg(windows)]
+            apply_native_titlebar_theme();
+            self.native_chrome_applied = true;
+        }
         if let Some(editor) = &mut self.txd_editor
             && let Some(source) = editor.poll(ctx)
         {
@@ -1128,6 +1171,7 @@ impl eframe::App for Browser {
             }
         }
         self.manager_ui(ctx);
+        self.sync_window_title(ctx);
         let dropped: Vec<PathBuf> = ctx.input(|i| {
             i.raw
                 .dropped_files
@@ -1265,16 +1309,19 @@ fn main() -> eframe::Result<()> {
         }
     }
     eframe::run_native(
-        "OpenProvince",
+        concat!("OpenProvince ", env!("CARGO_PKG_VERSION")),
         eframe::NativeOptions {
             depth_buffer: 24,
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([1280.0, 820.0])
                 .with_min_inner_size([900.0, 560.0])
+                .with_title(concat!("OpenProvince ", env!("CARGO_PKG_VERSION")))
                 .with_active(active),
             ..Default::default()
         },
         Box::new(move |creation| {
+            #[cfg(windows)]
+            apply_native_titlebar_theme();
             egui_extras::install_image_loaders(&creation.egui_ctx);
             let mut fonts = egui::FontDefinitions::default();
             if let Some(ui_font) = ["C:/Windows/Fonts/SegUIVar.ttf", "C:/Windows/Fonts/segoeui.ttf"]
@@ -1335,4 +1382,68 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(browser))
         }),
     )
+}
+
+#[cfg(windows)]
+fn apply_native_titlebar_theme() {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentThreadId() -> u32;
+    }
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn EnumThreadWindows(
+            dw_thread_id: u32,
+            lpfn: unsafe extern "system" fn(isize, isize) -> i32,
+            l_param: isize,
+        ) -> i32;
+    }
+    #[link(name = "dwmapi")]
+    unsafe extern "system" {
+        fn DwmSetWindowAttribute(
+            hwnd: isize,
+            dw_attribute: u32,
+            pv_attribute: *const std::ffi::c_void,
+            cb_attribute: u32,
+        ) -> i32;
+    }
+
+    unsafe extern "system" fn paint_window(hwnd: isize, _: isize) -> i32 {
+        let dark: i32 = 1;
+        let caption: u32 = 0x0020_1E1E; // BG_CHROME rgb(30, 30, 32)
+        let border: u32 = 0x003A_3535; // BORDER_LINE rgb(53, 53, 58)
+        let text: u32 = 0x00E8_E4E2; // TEXT_PRIMARY rgb(226, 228, 232)
+        unsafe {
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                20,
+                (&raw const dark).cast(),
+                std::mem::size_of_val(&dark) as u32,
+            );
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                35,
+                (&raw const caption).cast(),
+                std::mem::size_of_val(&caption) as u32,
+            );
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                34,
+                (&raw const border).cast(),
+                std::mem::size_of_val(&border) as u32,
+            );
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                36,
+                (&raw const text).cast(),
+                std::mem::size_of_val(&text) as u32,
+            );
+        }
+        1
+    }
+
+    unsafe {
+        let tid = GetCurrentThreadId();
+        let _ = EnumThreadWindows(tid, paint_window, 0);
+    }
 }

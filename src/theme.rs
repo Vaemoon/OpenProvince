@@ -45,6 +45,9 @@ pub enum Icon {
     Pencil,
     Undo,
     Redo,
+    GitHub,
+    Telegram,
+    Vk,
 }
 
 pub fn icon(kind: Icon) -> egui::Image<'static> {
@@ -90,6 +93,9 @@ pub fn icon_sized(kind: Icon, px: f32) -> egui::Image<'static> {
             "arrow-clockwise",
             include_str!("../assets/icons/arrow-clockwise.svg"),
         ),
+        Icon::GitHub => ("github", include_str!("../assets/icons/github.svg")),
+        Icon::Telegram => ("telegram", include_str!("../assets/icons/telegram.svg")),
+        Icon::Vk => ("vk", include_str!("../assets/icons/vk.svg")),
     };
     let bytes = svg.replace("currentColor", "#ffffff").into_bytes();
     egui::Image::from_bytes(format!("bytes://icons/{name}.svg"), bytes)
@@ -229,11 +235,40 @@ pub fn icon_button(
     tooltip: &str,
     enabled: bool,
 ) -> egui::Response {
-    let tint = if enabled { TEXT_SECONDARY } else { TEXT_MUTED };
-    let button = egui::Button::image(icon(icon_kind).tint(tint))
+    let tint = if enabled {
+        Color32::from_rgb(212, 214, 222)
+    } else {
+        TEXT_MUTED
+    };
+    let button = egui::Button::image(icon_sized(icon_kind, 14.0).tint(tint))
         .frame(false)
         .min_size(Vec2::splat(CONTROL_H));
     ui.add_enabled(enabled, button).on_hover_text(tooltip)
+}
+
+pub fn link_button(ui: &mut egui::Ui, icon_kind: Icon, label: &str, url: &str) -> egui::Response {
+    let resp = ui
+        .scope(|ui| {
+            let inactive = &mut ui.style_mut().visuals.widgets.inactive;
+            inactive.weak_bg_fill = BG_SURFACE;
+            inactive.bg_stroke = Stroke::new(1.0_f32, BORDER_INPUT);
+            inactive.fg_stroke = Stroke::new(1.0_f32, TEXT_PRIMARY);
+            ui.add(
+                egui::Button::image_and_text(
+                    icon_sized(icon_kind, 14.0).tint(TEXT_PRIMARY),
+                    egui::RichText::new(label).size(12.5),
+                )
+                .corner_radius(3.0)
+                .min_size(Vec2::new(0.0, CONTROL_H + 2.0)),
+            )
+        })
+        .inner
+        .on_hover_text(url)
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if resp.clicked() {
+        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+    }
+    resp
 }
 
 pub fn bordered_button(ui: &mut egui::Ui, label: &str, min_size: Vec2) -> egui::Response {
