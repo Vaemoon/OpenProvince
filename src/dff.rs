@@ -581,6 +581,8 @@ pub fn decode_with_wheels(mut bytes: &[u8], wheel_sizes: [f32; 2]) -> Result<Mod
     let mut fallback_high = [f32::NEG_INFINITY; 3];
     let mut wheel_components: std::collections::BTreeMap<i32, Vec<(usize, Face)>> =
         Default::default();
+    let mut standalone_left_wheels: std::collections::BTreeMap<i32, Vec<usize>> =
+        Default::default();
     let mut occupied_wheels = std::collections::BTreeSet::new();
     for (_, atomic) in chunks(clump)?.into_iter().filter(|(id, _)| *id == 0x14) {
         let data = child(atomic, 1)?;
@@ -723,48 +725,48 @@ pub fn decode_with_wheels(mut bytes: &[u8], wheel_sizes: [f32; 2]) -> Result<Mod
             for (idx, face) in model.faces[face_start..].iter().cloned().enumerate() {
                 entry.push((face_start + idx, face));
             }
+        } else if vehicle
+            && let Some(part) = left_wheel_part_ancestor(frame, &frames)?
+        {
+            standalone_left_wheels
+                .entry(part)
+                .or_default()
+                .extend(face_start..model.faces.len());
         }
     }
-    // MTA/Province bus and truck models frequently leave occupied wheel_l*_dummy frames
-    // unrotated (Rxx > 0), placing left wheels inward inside the body. Turn them 180° around Z.
+    // MTA/Province bus and truck models frequently leave occupied wheel_l*_dummy and separate
+    // wheel_l*_cap hubcaps unrotated (Rxx > 0), placing left wheels/caps inward. Turn them 180° around Z.
     for (&dummy, wheel_faces) in &mut wheel_components {
-        let name = frames[dummy as usize].name.as_str();
-        if !name.starts_with("wheel_l") {
+        if !frames[dummy as usize].name.starts_with("wheel_l") {
             continue;
         }
         let origin = transform([0.0; 3], dummy, &frames)?;
-        if origin[0] >= -0.1 {
-            continue;
-        }
-        let (mut min_rel_x, mut max_rel_x) = (f32::INFINITY, f32::NEG_INFINITY);
-        for (_, face) in wheel_faces.iter() {
-            for p in &face.points {
-                let rel_x = p[0] - origin[0];
-                min_rel_x = min_rel_x.min(rel_x);
-                max_rel_x = max_rel_x.max(rel_x);
-            }
-        }
-        if min_rel_x.is_finite() && (min_rel_x + max_rel_x) > 0.02 {
+        let indices: Vec<usize> = wheel_faces.iter().map(|(i, _)| *i).collect();
+        if turn_left_wheel_around_origin(
+            &mut model.faces,
+            &indices,
+            origin,
+            &mut fallback_low,
+            &mut fallback_high,
+            &mut low,
+            &mut high,
+        ) {
             for (face_idx, cached_face) in wheel_faces.iter_mut() {
-                let target = &mut model.faces[*face_idx];
-                for i in 0..3 {
-                    let dx = target.points[i][0] - origin[0];
-                    let dy = target.points[i][1] - origin[1];
-                    target.points[i][0] = origin[0] - dx;
-                    target.points[i][1] = origin[1] - dy;
-                    target.normals[i][0] = -target.normals[i][0];
-                    target.normals[i][1] = -target.normals[i][1];
-                    cached_face.points[i] = target.points[i];
-                    cached_face.normals[i] = target.normals[i];
-                    for axis in 0..3 {
-                        fallback_low[axis] = fallback_low[axis].min(target.points[i][axis]);
-                        fallback_high[axis] = fallback_high[axis].max(target.points[i][axis]);
-                        low[axis] = low[axis].min(target.points[i][axis]);
-                        high[axis] = high[axis].max(target.points[i][axis]);
-                    }
-                }
+                *cached_face = model.faces[*face_idx].clone();
             }
         }
+    }
+    for (part_frame, indices) in &standalone_left_wheels {
+        let origin = transform([0.0; 3], *part_frame, &frames)?;
+        turn_left_wheel_around_origin(
+            &mut model.faces,
+            indices,
+            origin,
+            &mut fallback_low,
+            &mut fallback_high,
+            &mut low,
+            &mut high,
+        );
     }
     if !is_aircraft
         && let Some((&source, faces)) = wheel_components
@@ -888,6 +890,9 @@ pub fn decode_with_wheels(mut bytes: &[u8], wheel_sizes: [f32; 2]) -> Result<Mod
         low = fallback_low;
         high = fallback_high;
     }
+    if !vehicle {
+        orient_ped_upright(&mut model, &frames, &mut low, &mut high);
+    }
     for i in 0..3 {
         model.center[i] = (low[i] + high[i]) * 0.5;
     }
@@ -898,6 +903,184 @@ pub fn decode_with_wheels(mut bytes: &[u8], wheel_sizes: [f32; 2]) -> Result<Mod
         .max(0.01)
         * 0.5;
     Ok(model)
+}
+
+fn turn_left_wheel_around_origin(
+    faces: &mut [Face],
+    indices: &[usize],
+    origin: [f32; 3],
+    fallback_low: &mut [f32; 3],
+    fallback_high: &mut [f32; 3],
+    low: &mut [f32; 3],
+    high: &mut [f32; 3],
+) -> bool {
+    if origin[0] >= -0.1 {
+        return false;
+    }
+    let (mut min_rel_x, mut max_rel_x) = (f32::INFINITY, f32::NEG_INFINITY);
+    for &face_idx in indices {
+        for p in &faces[face_idx].points {
+            let rel_x = p[0] - origin[0];
+            min_rel_x = min_rel_x.min(rel_x);
+            max_rel_x = max_rel_x.max(rel_x);
+        }
+    }
+    if !min_rel_x.is_finite() || (min_rel_x + max_rel_x) <= 0.02 {
+        return false;
+    }
+    for &face_idx in indices {
+        let target = &mut faces[face_idx];
+        for i in 0..3 {
+            let dx = target.points[i][0] - origin[0];
+            let dy = target.points[i][1] - origin[1];
+            target.points[i][0] = origin[0] - dx;
+            target.points[i][1] = origin[1] - dy;
+            target.normals[i][0] = -target.normals[i][0];
+            target.normals[i][1] = -target.normals[i][1];
+            for axis in 0..3 {
+                fallback_low[axis] = fallback_low[axis].min(target.points[i][axis]);
+                fallback_high[axis] = fallback_high[axis].max(target.points[i][axis]);
+                low[axis] = low[axis].min(target.points[i][axis]);
+                high[axis] = high[axis].max(target.points[i][axis]);
+            }
+        }
+    }
+    true
+}
+
+fn left_wheel_part_ancestor(mut frame: i32, frames: &[Frame]) -> Result<Option<i32>, String> {
+    for _ in 0..=frames.len() {
+        if frame < 0 {
+            return Ok(None);
+        }
+        let node = frames
+            .get(frame as usize)
+            .ok_or("Invalid wheel hierarchy")?;
+        if node.name.starts_with("wheel_l") && !node.name.ends_with("_dummy") {
+            return Ok(Some(frame));
+        }
+        frame = node.parent;
+    }
+    Err("Cyclic wheel hierarchy".into())
+}
+
+fn norm3(v: [f32; 3]) -> Option<[f32; 3]> {
+    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    (len > 1e-4).then(|| [v[0] / len, v[1] / len, v[2] / len])
+}
+
+fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Ставит лежачие и наклонённые скины (педов) вертикально на ноги головой вверх (+Z).
+fn orient_ped_upright(
+    model: &mut Model,
+    frames: &[Frame],
+    low: &mut [f32; 3],
+    high: &mut [f32; 3],
+) {
+    let has_skeleton = frames.iter().any(|f| {
+        let t = f.name.trim();
+        t == "pelvis" || t == "spine" || t.starts_with("bip01")
+    });
+    if !has_skeleton {
+        return;
+    }
+    let span = [high[0] - low[0], high[1] - low[1], high[2] - low[2]];
+    let max_span = span[0].max(span[1]).max(span[2]);
+    if !max_span.is_finite() || max_span < 0.55 {
+        return;
+    }
+
+    let find_bone = |pred: fn(&str) -> bool| -> Option<[f32; 3]> {
+        for (i, f) in frames.iter().enumerate() {
+            if pred(f.name.trim())
+                && let Ok(p) = transform([0.0; 3], i as i32, frames)
+            {
+                return Some(p);
+            }
+        }
+        None
+    };
+
+    let head = find_bone(|n| n == "head" || n == "bip01 head" || n.ends_with(" head"));
+    let foot_l = find_bone(|n| n == "l foot" || n == "bip01 l foot");
+    let foot_r = find_bone(|n| n == "r foot" || n == "bip01 r foot");
+    let feet = match (foot_l, foot_r) {
+        (Some(a), Some(b)) => Some([(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5]),
+        (Some(a), None) | (None, Some(a)) => Some(a),
+        (None, None) => find_bone(|n| n == "pelvis"),
+    };
+
+    let basis: [[f32; 3]; 3] = if let (Some(h), Some(f)) = (head, feet)
+        && let Some(u) = norm3([h[0] - f[0], h[1] - f[1], h[2] - f[2]])
+    {
+        if u[2] > 0.94 {
+            return;
+        }
+        let clav_l = find_bone(|n| n == "bip01 l clavicle" || n == "l clavicle" || n == "l upperarm");
+        let clav_r = find_bone(|n| n == "bip01 r clavicle" || n == "r clavicle" || n == "r upperarm");
+        let l_ortho = clav_l
+            .zip(clav_r)
+            .and_then(|(l, r)| {
+                let raw = [l[0] - r[0], l[1] - r[1], l[2] - r[2]];
+                let proj = [
+                    raw[0] - u[0] * dot3(raw, u),
+                    raw[1] - u[1] * dot3(raw, u),
+                    raw[2] - u[2] * dot3(raw, u),
+                ];
+                norm3(proj)
+            })
+            .unwrap_or_else(|| {
+                let alt = if u[0].abs() < 0.8 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+                norm3(cross3(alt, u)).unwrap_or([1.0, 0.0, 0.0])
+            });
+        let y_axis = cross3(u, l_ortho);
+        [l_ortho, y_axis, u]
+    } else {
+        // Fallback: максимальный размах модели переводим в ось +Z.
+        let tall_axis = if span[0] >= span[1] && span[0] >= span[2] {
+            0
+        } else if span[1] >= span[0] && span[1] >= span[2] {
+            1
+        } else {
+            return;
+        };
+        match tall_axis {
+            0 => [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+            _ => [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]],
+        }
+    };
+
+    let rotate = |v: [f32; 3]| -> [f32; 3] {
+        [
+            dot3(v, basis[0]),
+            dot3(v, basis[1]),
+            dot3(v, basis[2]),
+        ]
+    };
+
+    *low = [f32::INFINITY; 3];
+    *high = [f32::NEG_INFINITY; 3];
+    for face in &mut model.faces {
+        for i in 0..3 {
+            face.points[i] = rotate(face.points[i]);
+            face.normals[i] = rotate(face.normals[i]);
+            for axis in 0..3 {
+                low[axis] = low[axis].min(face.points[i][axis]);
+                high[axis] = high[axis].max(face.points[i][axis]);
+            }
+        }
+    }
 }
 
 fn wheel_ancestor(mut frame: i32, frames: &[Frame]) -> Result<Option<i32>, String> {
@@ -1672,5 +1855,110 @@ mod tests {
         assert_eq!(model.faces.len(), 2);
         assert_eq!(model.faces[0].material, 0);
         assert_eq!(model.faces[1].material, 1);
+    }
+
+    #[test]
+    fn separate_left_wheel_cap_turns_outward_around_its_origin() {
+        let mut fl = 3u32.to_le_bytes().to_vec();
+        // Frame 0: root chassis at (0,0,0)
+        for v in [
+            1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+        ] {
+            fl.extend(v.to_le_bytes());
+        }
+        fl.extend((-1i32).to_le_bytes());
+        fl.extend(0u32.to_le_bytes());
+        // Frame 1: wheel_lf_cap at x = -0.98, unrotated Rxx = 1
+        for v in [
+            1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, -0.98, 2.0, -1.0,
+        ] {
+            fl.extend(v.to_le_bytes());
+        }
+        fl.extend(0i32.to_le_bytes());
+        fl.extend(0u32.to_le_bytes());
+        // Frame 2: wheel_rf_dummy marks this model as a vehicle
+        for v in [
+            1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.98, 2.0, -1.0,
+        ] {
+            fl.extend(v.to_le_bytes());
+        }
+        fl.extend(0i32.to_le_bytes());
+        fl.extend(0u32.to_le_bytes());
+
+        // Geometry shifted inward (+0.15 in local X) as in gaznext wheel_lf_cap
+        let mut geo = [0u32, 1, 3, 1]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
+        geo.extend([1u16, 0, 0, 2].into_iter().flat_map(u16::to_le_bytes));
+        geo.extend([0u32, 0, 0, 0, 1, 1].into_iter().flat_map(u32::to_le_bytes));
+        for v in [0.15f32, 0.0, 0.0, 0.15, 0.2, 0.0, 0.15, 0.0, 0.2, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0] {
+            geo.extend(v.to_le_bytes());
+        }
+        let mut mat = vec![0u8; 28];
+        mat[4..8].fill(255);
+        let mlist = chunk(8, &[chunk(1, &[1, 0, 0, 0, 255, 255, 255, 255]), chunk(7, &[chunk(1, &mat), chunk(3, &[])].concat())].concat());
+        let g = chunk(0xf, &[chunk(1, &geo), mlist].concat());
+
+        let name_ext = |s: &[u8]| chunk(3, &chunk(0x0253_f2fe, s));
+        let frame_list = chunk(
+            0xe,
+            &[
+                chunk(1, &fl),
+                name_ext(b"chassis\0"),
+                name_ext(b"wheel_lf_cap\0"),
+                name_ext(b"wheel_rf_dummy\0"),
+            ]
+            .concat(),
+        );
+        let atomic = chunk(0x14, &chunk(1, &[1u32, 0, 4, 0].into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>()));
+        let bytes = chunk(0x10, &[chunk(1, &[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), frame_list, chunk(0x1a, &g), atomic].concat());
+
+        let model = decode(&bytes).expect("cap model");
+        // Previously x = -0.98 + 0.15 = -0.83 (inward); rotated 180° around -0.98 -> -1.13 (outward)
+        assert!((model.faces[0].points[0][0] - (-1.13)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn lying_ped_with_skeleton_becomes_upright() {
+        let mut fl = 3u32.to_le_bytes().to_vec();
+        // Frame 0: pelvis at origin
+        for v in [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0] {
+            fl.extend(v.to_le_bytes());
+        }
+        fl.extend((-1i32).to_le_bytes());
+        fl.extend(0u32.to_le_bytes());
+        // Frame 1: head lying at +X
+        for v in [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.7, 0.0, 0.0] {
+            fl.extend(v.to_le_bytes());
+        }
+        fl.extend(0i32.to_le_bytes());
+        fl.extend(0u32.to_le_bytes());
+        // Frame 2: l foot at -X
+        for v in [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, -0.9, 0.0, 0.1] {
+            fl.extend(v.to_le_bytes());
+        }
+        fl.extend(0i32.to_le_bytes());
+        fl.extend(0u32.to_le_bytes());
+
+        let mut geo = [0u32, 1, 3, 1].into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>();
+        geo.extend([1u16, 0, 0, 2].into_iter().flat_map(u16::to_le_bytes));
+        geo.extend([0u32, 0, 0, 0, 1, 1].into_iter().flat_map(u32::to_le_bytes));
+        for v in [-0.9f32, -0.1, 0.0, 0.7, 0.1, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0] {
+            geo.extend(v.to_le_bytes());
+        }
+        let mut mat = vec![0u8; 28];
+        mat[4..8].fill(255);
+        let mlist = chunk(8, &[chunk(1, &[1, 0, 0, 0, 255, 255, 255, 255]), chunk(7, &[chunk(1, &mat), chunk(3, &[])].concat())].concat());
+        let g = chunk(0xf, &[chunk(1, &geo), mlist].concat());
+        let name_ext = |s: &[u8]| chunk(3, &chunk(0x0253_f2fe, s));
+        let frame_list = chunk(0xe, &[chunk(1, &fl), name_ext(b"pelvis\0"), name_ext(b"head\0"), name_ext(b"l foot\0")].concat());
+        let atomic = chunk(0x14, &chunk(1, &[0u32, 0, 4, 0].into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>()));
+        let bytes = chunk(0x10, &[chunk(1, &[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), frame_list, chunk(0x1a, &g), atomic].concat());
+
+        let model = decode(&bytes).expect("ped model");
+        let z_foot = model.faces[0].points[0][2];
+        let z_head = model.faces[0].points[1][2];
+        assert!(z_head > z_foot + 1.0, "expected upright ped (head={z_head}, foot={z_foot})");
     }
 }

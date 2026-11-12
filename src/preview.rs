@@ -17,8 +17,88 @@ pub struct PlayerCloth {
 #[derive(Default)]
 pub struct Catalog {
     pub models: BTreeMap<String, String>,
+    pub hashed_models: BTreeMap<u32, String>,
     pub parents: Vec<(String, String)>,
     pub player_clothes: Vec<PlayerCloth>,
+}
+
+/// Стандартный хеш имён GTA SA (`CKeyGen::GetUppercaseKey` — JAMCRC по ASCII в верхнем регистре).
+fn gta_uppercase_hash(text: &str) -> u32 {
+    let mut hash = 0xFFFF_FFFFu32;
+    for byte in text.bytes().map(|b| b.to_ascii_uppercase()) {
+        hash ^= u32::from(byte);
+        for _ in 0..8 {
+            hash = if hash & 1 != 0 {
+                (hash >> 1) ^ 0xEDB8_8320
+            } else {
+                hash >> 1
+            };
+        }
+    }
+    hash
+}
+
+/// Читает определения моделей (`types 1,2,3,5`) и родительских словарей (`type 6`) из `data/map.bin`.
+fn parse_map_bin_into(bytes: &[u8], catalog: &mut Catalog) {
+    let u32_at = |offset: usize| -> Option<u32> {
+        let slice: [u8; 4] = bytes.get(offset..offset + 4)?.try_into().ok()?;
+        Some(u32::from_le_bytes(slice))
+    };
+    if bytes.len() < 8 || u32_at(0) != Some(0x2A09_3EF5) {
+        return;
+    }
+    let count = u32_at(4).unwrap_or(0) as usize;
+    let read_str = |offset: usize| -> Option<(String, usize)> {
+        let len = u32_at(offset)? as usize;
+        if len > 256 {
+            return None;
+        }
+        let s = bytes.get(offset + 4..offset + 4 + len)?;
+        Some((
+            String::from_utf8_lossy(s).trim().to_ascii_lowercase(),
+            offset + 4 + len,
+        ))
+    };
+
+    let mut pos = 8usize;
+    for _ in 0..count {
+        let Some(&marker) = bytes.get(pos) else { break };
+        if marker == 0xFF {
+            pos += 1;
+        }
+        let Some(&kind) = bytes.get(pos) else { break };
+        match kind {
+            1 | 2 => {
+                let Some(name_hash) = u32_at(pos + 9) else { break };
+                let Some((txd, next)) = read_str(pos + 37) else { break };
+                if !txd.is_empty() && txd != "null" {
+                    catalog.hashed_models.insert(name_hash, txd);
+                }
+                pos = next;
+            }
+            3 | 5 => {
+                let Some(name_hash) = u32_at(pos + 9) else { break };
+                let Some((txd, after_txd)) = read_str(pos + 41) else { break };
+                let Some((model_name, next)) = read_str(after_txd) else { break };
+                if !txd.is_empty() && txd != "null" {
+                    catalog.hashed_models.insert(name_hash, txd.clone());
+                    if !model_name.is_empty() {
+                        catalog.models.insert(model_name, txd);
+                    }
+                }
+                pos = next;
+            }
+            6 => {
+                let Some((child, after_child)) = read_str(pos + 1) else { break };
+                let Some((parent, next)) = read_str(after_child) else { break };
+                if !child.is_empty() && !parent.is_empty() {
+                    catalog.parents.push((child, parent));
+                }
+                pos = next;
+            }
+            _ => break,
+        }
+    }
 }
 
 fn find_game_roots(start: &Path) -> Vec<PathBuf> {
@@ -212,6 +292,13 @@ pub fn catalog_for_path(start: &Path) -> Arc<Catalog> {
         }
     }
     for root in &roots {
+        for rel in ["data/map.bin", "unpacked/data/map.bin", "decoded_data/map.bin.bin"] {
+            let path = root.join(rel);
+            if let Ok(bytes) = std::fs::read(&path) {
+                let decoded = profile.decode_file(&path, &bytes);
+                parse_map_bin_into(&decoded, &mut catalog);
+            }
+        }
         for rel in ["data/shopping.dat", "unpacked/data/shopping.dat"] {
             let path = root.join(rel);
             if let Ok(bytes) = std::fs::read(&path) {
@@ -641,7 +728,11 @@ pub fn load_model_with_variant(
         .filter(|n| !n.is_empty())
         .collect();
     let mut dictionaries = BTreeSet::from([name.clone()]);
-    if let Some(texture) = catalog.models.get(&name) {
+    if let Some(texture) = catalog
+        .models
+        .get(&name)
+        .or_else(|| catalog.hashed_models.get(&gta_uppercase_hash(&name)))
+    {
         dictionaries.insert(texture.clone());
     }
     for _ in 0..8 {
@@ -837,5 +928,49 @@ mod tests {
         assert_eq!(catalog.player_clothes.len(), 1);
         assert_eq!(catalog.player_clothes[0].model, "jeans");
         assert_eq!(catalog.player_clothes[0].slot, 2);
+    }
+    #[test]
+    fn map_bin_parser_resolves_hashed_models_and_txdp() {
+        assert_eq!(gta_uppercase_hash("Mirnnew100"), 0x299a_569c);
+        assert_eq!(gta_uppercase_hash("F1"), 0x49db_05b9);
+
+        let mut bin = Vec::new();
+        bin.extend_from_slice(&0x2A09_3EF5u32.to_le_bytes());
+        bin.extend_from_slice(&2u32.to_le_bytes());
+
+        // Record 0: type=1, hash=gta_uppercase_hash("Mirnnew100"), txd="Mirnnew20"
+        bin.push(1);
+        bin.extend_from_slice(&9063u32.to_le_bytes());
+        bin.extend_from_slice(&0u32.to_le_bytes());
+        bin.extend_from_slice(&gta_uppercase_hash("mirnnew100").to_le_bytes());
+        bin.extend_from_slice(&[0u8; 24]);
+        let txd = b"Mirnnew20";
+        bin.extend_from_slice(&(txd.len() as u32).to_le_bytes());
+        bin.extend_from_slice(txd);
+
+        // Group marker + Record 1: type=6 (txdp), child="Mirnnew20", parent="province_map"
+        bin.push(0xFF);
+        bin.push(6);
+        let child = b"Mirnnew20";
+        let parent = b"province_map";
+        bin.extend_from_slice(&(child.len() as u32).to_le_bytes());
+        bin.extend_from_slice(child);
+        bin.extend_from_slice(&(parent.len() as u32).to_le_bytes());
+        bin.extend_from_slice(parent);
+
+        let mut catalog = Catalog::default();
+        parse_map_bin_into(&bin, &mut catalog);
+        assert_eq!(
+            catalog
+                .hashed_models
+                .get(&gta_uppercase_hash("mirnnew100"))
+                .map(String::as_str),
+            Some("mirnnew20")
+        );
+        assert!(
+            catalog
+                .parents
+                .contains(&("mirnnew20".into(), "province_map".into()))
+        );
     }
 }
