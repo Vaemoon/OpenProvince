@@ -202,9 +202,35 @@ pub fn tool_button(
         icon(icon_kind).tint(tint),
         egui::RichText::new(label).size(12.5),
     )
+    .wrap_mode(egui::TextWrapMode::Extend)
     .frame(false)
     .min_size(Vec2::new(0.0, CONTROL_H));
     ui.add_enabled(enabled, button).on_hover_text(tooltip)
+}
+
+pub fn bordered_icon_button(
+    ui: &mut egui::Ui,
+    icon_kind: Icon,
+    label: &str,
+    tooltip: &str,
+    enabled: bool,
+) -> egui::Response {
+    ui.scope(|ui| {
+        let inactive = &mut ui.style_mut().visuals.widgets.inactive;
+        inactive.weak_bg_fill = BG_SURFACE;
+        inactive.bg_stroke = Stroke::new(1.0_f32, BORDER_INPUT);
+        inactive.fg_stroke = Stroke::new(1.0_f32, TEXT_PRIMARY);
+        let tint = if enabled { TEXT_PRIMARY } else { TEXT_MUTED };
+        let button = egui::Button::image_and_text(
+            icon(icon_kind).tint(tint),
+            egui::RichText::new(label).size(12.5),
+        )
+        .wrap_mode(egui::TextWrapMode::Extend)
+        .corner_radius(3.0)
+        .min_size(Vec2::new(0.0, CONTROL_H + 2.0));
+        ui.add_enabled(enabled, button).on_hover_text(tooltip)
+    })
+    .inner
 }
 
 pub fn primary_button(
@@ -219,6 +245,7 @@ pub fn primary_button(
             icon(icon_kind).tint(Color32::WHITE),
             egui::RichText::new(label).size(12.5).color(Color32::WHITE),
         )
+        .wrap_mode(egui::TextWrapMode::Extend)
         .fill(ACCENT)
         .stroke(Stroke::NONE)
         .corner_radius(3.0)
@@ -279,7 +306,8 @@ pub fn bordered_button(ui: &mut egui::Ui, label: &str, min_size: Vec2) -> egui::
         inactive.fg_stroke = Stroke::new(1.0_f32, TEXT_PRIMARY);
         ui.add_sized(
             min_size,
-            egui::Button::new(egui::RichText::new(label).size(12.5)),
+            egui::Button::new(egui::RichText::new(label).size(12.5))
+                .wrap_mode(egui::TextWrapMode::Extend),
         )
     })
     .inner
@@ -348,6 +376,7 @@ pub fn tab_toggle(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::Respo
         }
         ui.add(
             egui::Button::new(egui::RichText::new(label).size(12.0))
+                .wrap_mode(egui::TextWrapMode::Extend)
                 .corner_radius(3.0)
                 .min_size(Vec2::new(0.0, CONTROL_H)),
         )
@@ -363,6 +392,7 @@ pub fn panel_menu<R>(
 ) {
     let label = format!("{}    ", title.as_ref());
     let button = egui::Button::new(egui::RichText::new(label).size(12.5))
+        .wrap_mode(egui::TextWrapMode::Extend)
         .corner_radius(3.0)
         .min_size(Vec2::new(0.0, CONTROL_H));
     ui.scope(|ui| {
@@ -398,6 +428,76 @@ pub fn hline(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 1.0), egui::Sense::hover());
     ui.painter()
         .line_segment([rect.left_center(), rect.right_center()], Stroke::new(1.0_f32, BORDER_LINE));
+}
+
+/// Вертикальный разделитель фиксированной высоты для переносящихся панелей кнопок.
+pub fn vsep(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(4.0, CONTROL_H), egui::Sense::hover());
+    let top = egui::pos2(rect.center().x, rect.center().y - 8.0);
+    let bottom = egui::pos2(rect.center().x, rect.center().y + 8.0);
+    ui.painter()
+        .line_segment([top, bottom], Stroke::new(1.0_f32, BORDER_LINE));
+}
+
+pub fn percent_slider(ui: &mut egui::Ui, value: &mut f32, width: f32) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(
+        Vec2::new(width, CONTROL_H - 4.0),
+        egui::Sense::click_and_drag(),
+    );
+    let mut changed = false;
+    if (resp.clicked() || resp.dragged())
+        && let Some(pos) = resp.interact_pointer_pos()
+    {
+        let usable = (rect.width() - 8.0).max(1.0);
+        let next = ((pos.x - (rect.left() + 4.0)) / usable).clamp(0.0, 1.0);
+        if (next - *value).abs() > 1e-3 {
+            *value = next;
+            changed = true;
+        }
+    }
+    let hovering = resp.hovered() || resp.dragged();
+    if hovering {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    let painter = ui.painter();
+    painter.rect_filled(rect, 3.0, BG_INPUT);
+    let inner = rect.shrink(2.0);
+    let fill_w = (inner.width() * value.clamp(0.0, 1.0)).max(0.0);
+    if fill_w > 0.5 {
+        let fill_rect = egui::Rect::from_min_size(inner.min, Vec2::new(fill_w, inner.height()));
+        painter.rect_filled(
+            fill_rect,
+            2.0,
+            if hovering { ACCENT } else { SELECTION_BG },
+        );
+    }
+    let thumb_x = inner.left() + inner.width() * value.clamp(0.0, 1.0);
+    painter.line_segment(
+        [
+            egui::pos2(thumb_x.clamp(inner.left() + 1.0, inner.right() - 1.0), inner.top() + 1.0),
+            egui::pos2(thumb_x.clamp(inner.left() + 1.0, inner.right() - 1.0), inner.bottom() - 1.0),
+        ],
+        Stroke::new(2.0_f32, if hovering { Color32::WHITE } else { TEXT_PRIMARY }),
+    );
+    painter.rect_stroke(
+        rect,
+        3.0,
+        Stroke::new(1.0_f32, if hovering { BORDER_HOVER } else { BORDER_INPUT }),
+        egui::StrokeKind::Inside,
+    );
+    let pct = (*value * 100.0).round() as u32;
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        format!("{pct}%"),
+        egui::FontId::proportional(11.0),
+        if *value > 0.45 || hovering {
+            TEXT_PRIMARY
+        } else {
+            TEXT_SECONDARY
+        },
+    );
+    changed
 }
 
 pub fn format_size(bytes: u64) -> String {

@@ -171,34 +171,49 @@ pub(super) fn finalize_interactables(
         };
         let (axis, max_angle_rad) = match kind {
             DoorKind::Lid => {
-                // По правилу правой руки вокруг +X положительный угол поднимает передний капот (+Y -> +Z),
-                // отрицательный поднимает багажник (-Y -> +Z) и вертикальные задние люки.
-                let deg = if rel[1] > 0.1 { 55.0f32 } else { -70.0f32 };
+                // Для вертикально висящих крышек (решётки автобусов/грузовиков, задние люки) знак зависит от перед/зад.
+                let deg = if rel[1].abs() < 0.12 && rel[2] < -0.08 {
+                    if pivot[1] > 0.0 { 75.0f32 } else { -75.0f32 }
+                } else if rel[1] > 0.1 {
+                    55.0f32
+                } else {
+                    -70.0f32
+                };
                 ([1.0, 0.0, 0.0], deg.to_radians())
             }
             DoorKind::LeftDoor => {
-                // Задние распашные двери крепятся по бокам и уходят внутрь к центру кузова (rel_x > 0).
-                let deg = if rel[0].abs() > rel[1].abs() && rel[0] > 0.1 {
-                    -105.0f32
-                } else if rel[1] > 0.1 {
-                    65.0f32
+                // Фонарь кабины самолётов и двери с петлёй по продольной оси Y поднимаются вверх.
+                if pivot[0] > 0.1 && rel[0] < -0.1 {
+                    ([0.0, 1.0, 0.0], 70.0f32.to_radians())
                 } else {
-                    -65.0f32
-                };
-                ([0.0, 0.0, 1.0], deg.to_radians())
+                    // Задние распашные двери крепятся по бокам и уходят внутрь к центру кузова (rel_x > 0).
+                    let deg = if rel[0].abs() > rel[1].abs() && rel[0] > 0.1 {
+                        -105.0f32
+                    } else if rel[1] > 0.1 {
+                        65.0f32
+                    } else {
+                        -65.0f32
+                    };
+                    ([0.0, 0.0, 1.0], deg.to_radians())
+                }
             }
             DoorKind::RightDoor => {
-                let deg = if rel[0].abs() > rel[1].abs() && rel[0] < -0.1 {
-                    105.0f32
-                } else if rel[1] > 0.1 {
-                    -65.0f32
+                if pivot[0] < -0.1 && rel[0] > 0.1 {
+                    ([0.0, 1.0, 0.0], (-70.0f32).to_radians())
                 } else {
-                    65.0f32
-                };
-                ([0.0, 0.0, 1.0], deg.to_radians())
+                    let deg = if rel[0].abs() > rel[1].abs() && rel[0] < -0.1 {
+                        105.0f32
+                    } else if rel[1] > 0.1 {
+                        -65.0f32
+                    } else {
+                        65.0f32
+                    };
+                    ([0.0, 0.0, 1.0], deg.to_radians())
+                }
             }
-            DoorKind::GearLeft => ([0.0, 1.0, 0.0], 85.0f32.to_radians()),
-            DoorKind::GearRight => ([0.0, 1.0, 0.0], (-85.0f32).to_radians()),
+            // Уборка шасси внутрь к фюзеляжу.
+            DoorKind::GearLeft => ([0.0, 1.0, 0.0], (-85.0f32).to_radians()),
+            DoorKind::GearRight => ([0.0, 1.0, 0.0], 85.0f32.to_radians()),
             DoorKind::SideAuto => unreachable!(),
         };
 

@@ -912,3 +912,108 @@ fn detects_doors_hood_and_trunk_with_universal_hinges() {
     assert!(model.interactables[1].max_angle_rad < 0.0);
     assert!(model.interactables[2].max_angle_rad < 0.0);
 }
+
+#[test]
+fn bus_front_lid_and_aircraft_canopy_gear_orient_correctly() {
+    let nodes = [
+        ("chassis_dummy", -1i32, [0.0f32, 0.0, 0.0]),
+        ("bonnet_dummy", 0, [0.0, 3.5, 0.1]),
+        ("door_lf_dummy", 0, [0.3, 2.3, 0.9]),
+        ("gear_l", 0, [-1.4, -1.8, -0.1]),
+        ("wheel_lb_dummy", 3, [-1.5, -2.0, -1.3]),
+        ("wheel_lb", 4, [0.0, 0.0, 0.0]),
+    ];
+    let mut fl = (nodes.len() as u32).to_le_bytes().to_vec();
+    for (_, parent, pos) in &nodes {
+        for v in [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+            .into_iter()
+            .chain(*pos)
+        {
+            fl.extend(v.to_le_bytes());
+        }
+        fl.extend(parent.to_le_bytes());
+        fl.extend(0u32.to_le_bytes());
+    }
+    let mut frame_list = chunk(1, &fl);
+    for (name, _, _) in &nodes {
+        frame_list.extend(chunk(3, &chunk(0x0253_f2fe, name.as_bytes())));
+    }
+    let make_panel = |p0: [f32; 3], p1: [f32; 3], p2: [f32; 3]| {
+        let mut g = [0u32, 1, 3, 1]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
+        g.extend([1u16, 0, 0, 2].into_iter().flat_map(u16::to_le_bytes));
+        g.extend([0u32, 0, 0, 0, 1, 1].into_iter().flat_map(u32::to_le_bytes));
+        for v in p0
+            .into_iter()
+            .chain(p1)
+            .chain(p2)
+            .chain([0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0])
+        {
+            g.extend(v.to_le_bytes());
+        }
+        let mut md = vec![0; 28];
+        md[4..8].fill(255);
+        let ml = chunk(
+            8,
+            &[
+                chunk(1, &[1, 0, 0, 0, 255, 255, 255, 255]),
+                chunk(7, &[chunk(1, &md), chunk(3, &[])].concat()),
+            ]
+            .concat(),
+        );
+        chunk(0xf, &[chunk(1, &g), ml].concat())
+    };
+    let geos = [
+        // Вертикальная крышка автобуса: висит вниз -Z при y = 0 относительно bonnet_dummy
+        make_panel([-0.3, 0.0, -0.1], [0.3, 0.0, -0.1], [0.0, 0.0, -0.7]),
+        // Фонарь кабины: петля справа, стекло слева (-X)
+        make_panel([-0.5, -0.4, 0.1], [-0.5, 0.4, 0.1], [-0.1, 0.0, 0.2]),
+        // Колесо шасси под gear_l
+        make_panel([0.0, -0.2, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]),
+    ]
+    .concat();
+    let atomics = [(1u32, 0u32), (2, 1), (5, 2)]
+        .into_iter()
+        .flat_map(|(f, g)| {
+            chunk(
+                0x14,
+                &chunk(
+                    1,
+                    &[f, g, 4, 0]
+                        .into_iter()
+                        .flat_map(u32::to_le_bytes)
+                        .collect::<Vec<_>>(),
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
+    let bytes = chunk(
+        0x10,
+        &[
+            chunk(1, &[3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            chunk(0xe, &frame_list),
+            chunk(0x1a, &geos),
+            atomics,
+        ]
+        .concat(),
+    );
+    let model = decode(&bytes).expect("bus/aircraft");
+    let hood = &model.interactables[0];
+    assert_eq!(hood.label, "Капот");
+    assert_eq!(hood.axis, [1.0, 0.0, 0.0]);
+    assert!(hood.max_angle_rad > 0.0);
+
+    let canopy = &model.interactables[1];
+    assert_eq!(canopy.label, "ПЛ дверь");
+    assert_eq!(canopy.axis, [0.0, 1.0, 0.0]);
+    assert!(canopy.max_angle_rad > 0.0);
+
+    let gear = &model.interactables[2];
+    assert_eq!(gear.label, "Шасси (лев.)");
+    assert_eq!(gear.axis, [0.0, 1.0, 0.0]);
+    assert!(gear.max_angle_rad < 0.0);
+    // Колесо внутри gear_l должно двигаться вместе со стойкой шасси.
+    assert_eq!(model.faces[2].interactable, Some(2));
+}

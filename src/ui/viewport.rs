@@ -206,42 +206,63 @@ impl Browser {
                     theme::hline(ui);
                     ui.add_space(4.0);
                 } else {
-                    ui.centered_and_justified(|ui| {
+                    let avail = ui.available_rect_before_wrap();
+                    let box_w = 420.0_f32.min(avail.width().max(180.0));
+                    let box_h = if self.archives.is_empty() { 112.0 } else { 36.0 };
+                    let center_rect = egui::Rect::from_center_size(
+                        avail.center(),
+                        Vec2::new(box_w, box_h),
+                    );
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(center_rect), |ui| {
                         ui.vertical_centered(|ui| {
+                            if self.archives.is_empty() {
+                                ui.add(
+                                    theme::icon_sized(theme::Icon::Archive, 24.0)
+                                        .tint(theme::TEXT_MUTED),
+                                );
+                                ui.add_space(8.0);
+                            }
                             ui.label(
                                 egui::RichText::new(if self.archives.is_empty() {
                                     "Откройте IMG-архив, файл TXD или перетащите их в окно"
                                 } else {
                                     "Выберите ресурс в списке слева"
                                 })
+                                .size(13.0)
                                 .color(theme::TEXT_SECONDARY),
                             );
                             if self.archives.is_empty() {
-                                ui.add_space(8.0);
-                                ui.horizontal(|ui| {
-                                    if theme::tool_button(
-                                        ui,
-                                        theme::Icon::FolderOpen,
-                                        "Открыть…",
-                                        "Открыть IMG или TXD (Ctrl+O)",
-                                        !self.busy,
-                                    )
-                                    .clicked()
-                                    {
-                                        self.command(Command::Open, ctx);
-                                    }
-                                    if theme::tool_button(
-                                        ui,
-                                        theme::Icon::Folder,
-                                        "Открыть папку…",
-                                        "Выбрать папку на диске",
-                                        !self.busy,
-                                    )
-                                    .clicked()
-                                    {
-                                        self.command(Command::Folder, ctx);
-                                    }
-                                });
+                                ui.add_space(12.0);
+                                let row_w = 248.0_f32.min(box_w);
+                                ui.allocate_ui_with_layout(
+                                    Vec2::new(row_w, theme::CONTROL_H + 4.0),
+                                    egui::Layout::left_to_right(Align::Center),
+                                    |ui| {
+                                        ui.spacing_mut().item_spacing.x = 8.0;
+                                        if theme::bordered_icon_button(
+                                            ui,
+                                            theme::Icon::FolderOpen,
+                                            "Открыть…",
+                                            "Открыть IMG или TXD (Ctrl+O)",
+                                            !self.busy,
+                                        )
+                                        .clicked()
+                                        {
+                                            self.command(Command::Open, ctx);
+                                        }
+                                        if theme::bordered_icon_button(
+                                            ui,
+                                            theme::Icon::Folder,
+                                            "Открыть папку…",
+                                            "Выбрать папку на диске",
+                                            !self.busy,
+                                        )
+                                        .clicked()
+                                        {
+                                            self.command(Command::Folder, ctx);
+                                        }
+                                    },
+                                );
                             }
                         });
                     });
@@ -417,7 +438,7 @@ impl Browser {
                                 });
                             }
 
-                            ui.separator();
+                            theme::vsep(ui);
                         },
                     );
                     if let Some(response) = response {

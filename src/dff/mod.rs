@@ -356,7 +356,8 @@ pub fn decode_with_wheels(mut bytes: &[u8], wheel_sizes: [f32; 2]) -> Result<Mod
         };
         let default_visible = component.is_none_or(|idx| model.components[idx].active_by_default);
         let wheel = wheel_ancestor(frame, &frames)?;
-        let interact_frame = if is_vehicle && wheel.is_none() {
+        // Шасси самолётов (gear_l / gear_r) содержат wheel_*_dummy внутри себя и должны двигаться целиком.
+        let interact_frame = if is_vehicle {
             interactable_ancestor(frame, &frames)
         } else {
             None

@@ -137,7 +137,6 @@ fn validate_name(name: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// A bounded range in the archive. Size includes IMG sector padding.
 #[derive(Clone, Debug, Serialize)]
 pub struct Entry {
     pub index: usize,
@@ -147,7 +146,6 @@ pub struct Entry {
     pub name_obfuscated: bool,
 }
 
-/// An immutable directory index; payloads are read on demand.
 #[derive(Debug)]
 pub struct Archive {
     path: PathBuf,
@@ -155,7 +153,6 @@ pub struct Archive {
     entries: Vec<Entry>,
 }
 
-/// An explicit archive edit. Saving always creates a separate archive.
 #[derive(Clone, Debug)]
 pub enum Edit {
     Replace { name: String, source: PathBuf },
@@ -189,8 +186,6 @@ fn source_name(path: &Path) -> Result<String, Error> {
     Ok(name.to_owned())
 }
 
-/// Pack decoded, flat resource files into an obfuscated, encrypted Province IMG.
-/// The output must not exist. Directory children and symlinks are rejected.
 pub fn pack_directory(input: &Path, output: &Path, profile: &Profile) -> Result<(), Error> {
     let mut entries = Vec::new();
     for item in fs::read_dir(input)? {

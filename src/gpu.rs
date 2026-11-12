@@ -489,7 +489,7 @@ impl View {
                     ui,
                     format!("Двери ({open_parts}/{total_parts})"),
                     |ui| {
-                        ui.set_min_width(220.0);
+                        ui.set_min_width(268.0);
                         ui.horizontal(|ui| {
                             if ui.button("Открыть все").clicked() {
                                 self.settings.part_open.fill(1.0);
@@ -516,17 +516,7 @@ impl View {
                                         ui.with_layout(
                                             egui::Layout::right_to_left(egui::Align::Center),
                                             |ui| {
-                                                let mut pct = *val * 100.0;
-                                                if ui
-                                                    .add_sized(
-                                                        [82.0, theme::CONTROL_H],
-                                                        egui::Slider::new(&mut pct, 0.0..=100.0)
-                                                            .show_value(false),
-                                                    )
-                                                    .changed()
-                                                {
-                                                    *val = (pct / 100.0).clamp(0.0, 1.0);
-                                                }
+                                                theme::percent_slider(ui, val, 124.0);
                                             },
                                         );
                                     });
@@ -577,7 +567,7 @@ impl View {
             }
 
             if has_paint_materials || vinyl.is_some() {
-                ui.separator();
+                theme::vsep(ui);
                 ui.label(
                     egui::RichText::new("Кузов")
                         .size(12.0)
