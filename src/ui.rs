@@ -37,6 +37,7 @@ enum RowItem {
 #[derive(Clone, Copy)]
 enum Command {
     Open,
+    OpenTxd,
     AddArchive,
     OpenFolderImgs,
     Folder,
@@ -63,6 +64,11 @@ impl Browser {
             self.status = "Сначала сохраните или отмените изменения архива.".into();
             return;
         }
+        if self.txd_editor.as_ref().is_some_and(|e| e.disk_dirty) {
+            self.status = "Сначала сохраните или закройте изменённый TXD.".into();
+            return;
+        }
+        self.standalone_txd = None;
         self.busy = true;
         let sender = self.sender.clone();
         let ctx = ctx.clone();
@@ -84,6 +90,22 @@ impl Browser {
             ctx.request_repaint();
         });
     }
+    fn close_standalone_txd(&mut self) {
+        if self.txd_editor.as_ref().is_some_and(|e| e.disk_dirty) {
+            self.status = "Нельзя закрыть TXD с несохранёнными правками (Ctrl+S).".into();
+            return;
+        }
+        self.standalone_txd = None;
+        if self.txd_editor.as_ref().is_some_and(|e| e.disk_path.is_some()) {
+            self.txd_editor = None;
+            self.preview.clear();
+        }
+        if let Some(sel) = self.selected
+            && !self.archives.is_empty()
+        {
+            self.status = format!("Выбрана вкладка: {}", self.archive_label(sel.archive));
+        }
+    }
     fn command(&mut self, command: Command, ctx: &egui::Context) {
         if self.busy || self.txd_editor.as_ref().is_some_and(|e| e.busy) {
             self.status = "Дождитесь завершения текущей операции.".into();
@@ -92,11 +114,34 @@ impl Browser {
         match command {
             Command::Open => {
                 if let Some(paths) = rfd::FileDialog::new()
+                    .add_filter("IMG и TXD ресурсы", &["img", "txd"])
                     .add_filter("IMG archives", &["img"])
+                    .add_filter("RenderWare TXD", &["txd"])
                     .set_directory(&self.folder)
                     .pick_files()
                 {
-                    self.open_many(paths, false, ctx);
+                    let imgs: Vec<PathBuf> = paths
+                        .iter()
+                        .filter(|p| !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("txd")))
+                        .cloned()
+                        .collect();
+                    if !imgs.is_empty() {
+                        self.open_many(imgs, false, ctx);
+                    } else if let Some(txd) = paths
+                        .into_iter()
+                        .find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("txd")))
+                    {
+                        self.open_txd_file(txd, ctx);
+                    }
+                }
+            }
+            Command::OpenTxd => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("RenderWare TXD", &["txd"])
+                    .set_directory(&self.folder)
+                    .pick_file()
+                {
+                    self.open_txd_file(path, ctx);
                 }
             }
             Command::AddArchive => {
@@ -157,9 +202,9 @@ impl Browser {
                         .and_then(|a| a.entries().get(target.index))
                 {
                     if self.edits.is_empty() {
-                        self.active_archive = target.archive;
+                        self.edited_archive = Some(target.archive);
                     }
-                    if self.active_archive == target.archive {
+                    if self.edited_archive == Some(target.archive) {
                         self.stage(Edit::Replace {
                             name: entry.name.clone(),
                             source,
@@ -174,9 +219,9 @@ impl Browser {
                 let first_arch = self.selection.iter().next().map(|r| r.archive);
                 if let Some(arch) = first_arch {
                     if self.edits.is_empty() {
-                        self.active_archive = arch;
+                        self.edited_archive = Some(arch);
                     }
-                    if self.active_archive != arch
+                    if self.edited_archive != Some(arch)
                         || self.selection.iter().any(|r| r.archive != arch)
                     {
                         self.status =
@@ -207,7 +252,15 @@ impl Browser {
             Command::Save => self.save_current(ctx),
             Command::SaveAs => self.save(ctx),
             Command::CloseActive => {
-                if !self.archives.is_empty() {
+                if self.standalone_txd.is_some()
+                    && (self.archives.is_empty()
+                        || self
+                            .txd_editor
+                            .as_ref()
+                            .is_some_and(|e| e.disk_path.is_some()))
+                {
+                    self.close_standalone_txd();
+                } else if !self.archives.is_empty() {
                     self.close_archive(self.active_archive, ctx);
                 }
             }
@@ -222,12 +275,13 @@ impl Browser {
                             self.browse(path, ctx)
                         } else if path
                             .extension()
-                            .is_some_and(|e| e.eq_ignore_ascii_case("img"))
+                            .is_some_and(|e| e.eq_ignore_ascii_case("img") || e.eq_ignore_ascii_case("txd"))
                         {
                             self.open(path, ctx);
                         } else {
                             self.status =
-                                "Откройте IMG архив, чтобы просмотреть его ресурсы.".into();
+                                "Откройте IMG-архив или TXD-словарь, чтобы просмотреть ресурсы."
+                                    .into();
                         }
                     }
                 }
@@ -295,6 +349,7 @@ impl Browser {
             }
             Command::Discard => {
                 self.edits.clear();
+                self.edited_archive = None;
                 self.changes_open = false;
                 if self.type_filter == 4 {
                     self.type_filter = 0;
@@ -317,16 +372,12 @@ impl Browser {
                     self.selection = (0..self.folder_files.len())
                         .map(|index| EntryRef { archive: 0, index })
                         .collect();
-                } else {
-                    self.selection = self
-                        .archives
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(ai, a)| {
-                            (0..a.entries().len()).map(move |ei| EntryRef {
-                                archive: ai,
-                                index: ei,
-                            })
+                } else if let Some(a) = self.archives.get(self.active_archive) {
+                    let ai = self.active_archive;
+                    self.selection = (0..a.entries().len())
+                        .map(|ei| EntryRef {
+                            archive: ai,
+                            index: ei,
                         })
                         .collect();
                 }
@@ -337,7 +388,7 @@ impl Browser {
         }
     }
     fn pending_edit_tag(&self, archive_idx: usize, name: &str) -> Option<(&'static str, Color32)> {
-        if self.edits.is_empty() || archive_idx != self.active_archive {
+        if self.edits.is_empty() || self.edited_archive != Some(archive_idx) {
             return None;
         }
         self.edits.iter().rev().find_map(|edit| match edit {
@@ -403,9 +454,11 @@ impl Browser {
             self.type_filter
         };
         let cache_key = format!(
-            "{:?}|{}|{}|{}|{}|{}|{}|{}|{:?}",
+            "{:?}|{}|{}|{:?}|{}|{}|{}|{}|{}|{}|{:?}",
             archive_ptrs,
             self.active_archive,
+            self.all_tabs,
+            self.edited_archive,
             self.address,
             self.group_by_archive,
             self.filter,
@@ -420,10 +473,18 @@ impl Browser {
             cache.rows.clone()
         } else {
             let filter = self.filter.to_lowercase();
-            let multi = self.archives.len() > 1;
+            let multi = self.all_tabs && self.archives.len() > 1;
             let mut entries_list: Vec<EntryRow> = if !self.archives.is_empty() {
                 let mut list = Vec::new();
-                for (ai, arch) in self.archives.iter().enumerate() {
+                let range = if self.all_tabs {
+                    0..self.archives.len()
+                } else if self.active_archive < self.archives.len() {
+                    self.active_archive..self.active_archive + 1
+                } else {
+                    0..0
+                };
+                for ai in range {
+                    let arch = &self.archives[ai];
                     let arch_name = self.archive_label(ai);
                     let arch_stem = arch_name
                         .strip_suffix(".img")
@@ -592,7 +653,15 @@ impl Browser {
                 self.focus_search = true;
             }
         }
-        if (!self.edits.is_empty() || self.txd_editor.as_ref().is_some_and(|e| e.busy))
+        let standalone_dirty = self.txd_editor.as_ref().is_some_and(|e| e.disk_dirty);
+        let standalone_open = self.standalone_txd.is_some()
+            && self
+                .txd_editor
+                .as_ref()
+                .is_some_and(|e| e.disk_path.is_some());
+        if (!self.edits.is_empty()
+            || standalone_dirty
+            || self.txd_editor.as_ref().is_some_and(|e| e.busy))
             && ctx.input(|i| i.viewport().close_requested())
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -605,6 +674,7 @@ impl Browser {
         let paired_current = self.selected.and_then(|sel| self.find_paired_asset(sel));
         let mut menu_jump_to = None;
         let mut close_archive_idx = None;
+        let mut close_standalone = false;
         egui::TopBottomPanel::top("manager_chrome")
             .frame(
                 egui::Frame::new()
@@ -616,9 +686,16 @@ impl Browser {
                     ui.menu_button("Файл", |ui| {
                         menu(
                             ui,
-                            "Открыть архив IMG…    Ctrl+O",
+                            "Открыть IMG или TXD…    Ctrl+O",
                             true,
                             Command::Open,
+                            &mut command,
+                        );
+                        menu(
+                            ui,
+                            "Открыть внешний TXD…",
+                            true,
+                            Command::OpenTxd,
                             &mut command,
                         );
                         menu(
@@ -648,22 +725,22 @@ impl Browser {
                         menu(
                             ui,
                             "Сохранить изменения    Ctrl+S",
-                            has_archives && !self.edits.is_empty(),
+                            (has_archives && !self.edits.is_empty()) || standalone_dirty,
                             Command::Save,
                             &mut command,
                         );
                         menu(
                             ui,
-                            "Сохранить архив как…",
-                            has_archives,
+                            "Сохранить как…",
+                            has_archives || standalone_open,
                             Command::SaveAs,
                             &mut command,
                         );
                         ui.separator();
                         menu(
                             ui,
-                            "Закрыть активный архив    Ctrl+W",
-                            has_archives,
+                            "Закрыть активную вкладку    Ctrl+W",
+                            has_archives || standalone_open,
                             Command::CloseActive,
                             &mut command,
                         );
@@ -744,6 +821,18 @@ impl Browser {
                             .add_enabled(
                                 has_archives && self.archives.len() > 1,
                                 egui::Checkbox::new(
+                                    &mut self.all_tabs,
+                                    "Искать по всем вкладкам",
+                                ),
+                            )
+                            .changed()
+                        {
+                            self.row_cache = None;
+                        }
+                        if ui
+                            .add_enabled(
+                                has_archives && self.all_tabs && self.archives.len() > 1,
+                                egui::Checkbox::new(
                                     &mut self.group_by_archive,
                                     "Группировать по архивам",
                                 ),
@@ -770,7 +859,11 @@ impl Browser {
                         );
                         menu(
                             ui,
-                            "Извлечь весь архив…",
+                            if self.all_tabs && self.archives.len() > 1 {
+                                "Извлечь из всех вкладок…"
+                            } else {
+                                "Извлечь активный архив…"
+                            },
                             has_archives,
                             Command::ExtractAll,
                             &mut command,
@@ -805,6 +898,8 @@ impl Browser {
                     });
                 });
 
+                ui.add_space(3.0);
+                theme::hline(ui);
                 ui.add_space(4.0);
                 if has_archives {
                     egui::ScrollArea::horizontal()
@@ -819,8 +914,9 @@ impl Browser {
                                         .file_name()
                                         .unwrap_or_default()
                                         .to_string_lossy();
-                                    let active = ai == self.active_archive;
-                                    let dirty = active && !self.edits.is_empty();
+                                    let active = ai == self.active_archive && !standalone_open;
+                                    let dirty =
+                                        self.edited_archive == Some(ai) && !self.edits.is_empty();
                                     let tab_fill = if active {
                                         theme::BG_PANEL
                                     } else {
@@ -832,43 +928,57 @@ impl Browser {
                                         .show(ui, |ui| {
                                             ui.horizontal(|ui| {
                                                 ui.spacing_mut().item_spacing.x = 5.0;
-                                                ui.add(
-                                                    theme::icon_sized(theme::Icon::Archive, 13.0)
-                                                        .tint(if active {
-                                                            theme::TEXT_PRIMARY
+                                                let body = ui
+                                                    .horizontal(|ui| {
+                                                        ui.spacing_mut().item_spacing.x = 5.0;
+                                                        ui.add(
+                                                            theme::icon_sized(
+                                                                theme::Icon::Archive,
+                                                                13.0,
+                                                            )
+                                                            .tint(if active {
+                                                                theme::TEXT_PRIMARY
+                                                            } else {
+                                                                theme::TEXT_MUTED
+                                                            }),
+                                                        );
+                                                        let title_text = if dirty {
+                                                            format!("{name} *")
                                                         } else {
-                                                            theme::TEXT_MUTED
-                                                        }),
-                                                );
-                                                let title_text = if dirty {
-                                                    format!("{name} *")
-                                                } else {
-                                                    name.as_ref().to_owned()
-                                                };
-                                                let text = egui::RichText::new(title_text)
-                                                    .size(12.5)
-                                                    .color(if active {
-                                                        theme::TEXT_PRIMARY
-                                                    } else {
-                                                        theme::TEXT_SECONDARY
-                                                    });
-                                                let resp = ui
-                                                    .add(egui::Label::new(text).sense(Sense::click()))
-                                                    .on_hover_text(archive.path().display().to_string());
-                                                if resp.clicked() && !self.busy {
-                                                    if self.edits.is_empty() {
-                                                        self.active_archive = ai;
-                                                    } else if !active {
-                                                        self.status = "Сначала сохраните (Ctrl+S) или отмените правки активного архива.".into();
+                                                            name.as_ref().to_owned()
+                                                        };
+                                                        let text = egui::RichText::new(title_text)
+                                                            .size(12.5)
+                                                            .color(if dirty && !active {
+                                                                theme::STATUS_MODIFIED
+                                                            } else if active {
+                                                                theme::TEXT_PRIMARY
+                                                            } else {
+                                                                theme::TEXT_SECONDARY
+                                                            });
+                                                        ui.add(egui::Label::new(text));
+                                                        ui.label(
+                                                            egui::RichText::new(
+                                                                theme::format_thousands(
+                                                                    archive.entries().len() as u64,
+                                                                ),
+                                                            )
+                                                            .size(11.0)
+                                                            .color(theme::TEXT_MUTED),
+                                                        );
+                                                    })
+                                                    .response
+                                                    .interact(Sense::click())
+                                                    .on_hover_text(
+                                                        archive.path().display().to_string(),
+                                                    );
+                                                if body.clicked() && !self.busy {
+                                                    self.active_archive = ai;
+                                                    self.row_cache = None;
+                                                    if standalone_open && !standalone_dirty {
+                                                        close_standalone = true;
                                                     }
                                                 }
-                                                ui.label(
-                                                    egui::RichText::new(theme::format_thousands(
-                                                        archive.entries().len() as u64,
-                                                    ))
-                                                    .size(11.0)
-                                                    .color(theme::TEXT_MUTED),
-                                                );
                                                 if ui
                                                     .add(
                                                         egui::Button::image(
@@ -899,6 +1009,63 @@ impl Browser {
                                             Stroke::new(2.0_f32, accent_color),
                                         );
                                     }
+                                }
+                                if let Some(txd_path) = &self.standalone_txd
+                                    && standalone_open
+                                {
+                                    let txd_name = txd_path
+                                        .file_name()
+                                        .unwrap_or_default()
+                                        .to_string_lossy();
+                                    let title = if standalone_dirty {
+                                        format!("{txd_name} *")
+                                    } else {
+                                        txd_name.as_ref().to_owned()
+                                    };
+                                    let resp_frame = egui::Frame::new()
+                                        .fill(theme::BG_PANEL)
+                                        .inner_margin(Margin::symmetric(8, 4))
+                                        .show(ui, |ui| {
+                                            ui.horizontal(|ui| {
+                                                ui.spacing_mut().item_spacing.x = 5.0;
+                                                ui.add(
+                                                    theme::icon_sized(theme::Icon::Image, 13.0)
+                                                        .tint(theme::TEXT_PRIMARY),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new(title)
+                                                        .size(12.5)
+                                                        .color(theme::TEXT_PRIMARY),
+                                                )
+                                                .on_hover_text(txd_path.display().to_string());
+                                                if ui
+                                                    .add(
+                                                        egui::Button::image(
+                                                            theme::icon_sized(
+                                                                theme::Icon::Close,
+                                                                12.0,
+                                                            )
+                                                            .tint(theme::TEXT_MUTED),
+                                                        )
+                                                        .frame(false),
+                                                    )
+                                                    .on_hover_text(format!("Закрыть {txd_name}"))
+                                                    .clicked()
+                                                {
+                                                    close_standalone = true;
+                                                }
+                                            });
+                                        });
+                                    let r = resp_frame.response.rect;
+                                    let accent_color = if standalone_dirty {
+                                        theme::STATUS_MODIFIED
+                                    } else {
+                                        theme::ACCENT
+                                    };
+                                    ui.painter().line_segment(
+                                        [r.left_top(), r.right_top()],
+                                        Stroke::new(2.0_f32, accent_color),
+                                    );
                                 }
                                 if theme::icon_button(
                                     ui,
@@ -942,13 +1109,13 @@ impl Browser {
                                 self.open(path, ctx);
                             }
                         }
-                        if ui
-                            .add_sized(
-                                [open_imgs_w, theme::CONTROL_H],
-                                egui::Button::new("Открыть все IMG"),
-                            )
-                            .on_hover_text("Открыть все IMG из текущей папки")
-                            .clicked()
+                        if theme::bordered_button(
+                            ui,
+                            "Открыть все IMG",
+                            Vec2::new(open_imgs_w, theme::CONTROL_H),
+                        )
+                        .on_hover_text("Открыть все IMG из текущей папки")
+                        .clicked()
                         {
                             command = Some(Command::OpenFolderImgs);
                         }
@@ -958,9 +1125,18 @@ impl Browser {
         if let Some(idx) = close_archive_idx {
             self.close_archive(idx, ctx);
         }
+        if close_standalone {
+            self.close_standalone_txd();
+        }
 
         let total_items: usize = if has_archives {
-            self.archives.iter().map(|a| a.entries().len()).sum()
+            if self.all_tabs {
+                self.archives.iter().map(|a| a.entries().len()).sum()
+            } else {
+                self.archives
+                    .get(self.active_archive)
+                    .map_or(0, |a| a.entries().len())
+            }
         } else {
             self.folder_files.len()
         };
@@ -974,11 +1150,17 @@ impl Browser {
                 if let Some((done, total)) = self.progress {
                     ui.horizontal(|ui| {
                         ui.add_sized(
-                            [ui.available_width() - 90.0, 16.0],
+                            [ui.available_width() - 88.0, 16.0],
                             egui::ProgressBar::new(done as f32 / total.max(1) as f32)
                                 .text(format!("{done} / {total}")),
                         );
-                        if ui.button("Отмена").clicked() {
+                        if theme::bordered_button(
+                            ui,
+                            "Отмена",
+                            Vec2::new(76.0, theme::CONTROL_H),
+                        )
+                        .clicked()
+                        {
                             self.cancel
                                 .store(true, std::sync::atomic::Ordering::Relaxed);
                         }
@@ -995,6 +1177,20 @@ impl Browser {
                             .color(theme::TEXT_SECONDARY),
                     );
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                        if standalone_dirty {
+                            if theme::primary_button(
+                                ui,
+                                theme::Icon::Save,
+                                "Сохранить TXD",
+                                "Сохранить файл TXD (Ctrl+S)",
+                                !self.busy,
+                            )
+                            .clicked()
+                            {
+                                command = Some(Command::Save);
+                            }
+                            ui.separator();
+                        }
                         if !self.edits.is_empty() {
                             if theme::tool_button(
                                 ui,
@@ -1099,7 +1295,8 @@ impl Browser {
         let mut clicked = None;
         let mut double = false;
         let mut rendered_rows = Arc::new(Vec::new());
-        let multi = self.archives.len() > 1;
+        let has_multi_archives = self.archives.len() > 1;
+        let multi = has_multi_archives && self.all_tabs;
         egui::SidePanel::left("resource_files")
             .resizable(true)
             .default_width(540.0)
@@ -1159,6 +1356,18 @@ impl Browser {
                                     self.type_filter = if self.type_filter == 4 { 0 } else { 4 };
                                     self.row_cache = None;
                                 }
+                                if has_multi_archives {
+                                    ui.separator();
+                                    if theme::tab_toggle(ui, self.all_tabs, "Все вкладки")
+                                        .on_hover_text(
+                                            "Искать и показывать файлы из всех открытых IMG",
+                                        )
+                                        .clicked()
+                                    {
+                                        self.all_tabs = !self.all_tabs;
+                                        self.row_cache = None;
+                                    }
+                                }
                                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                                     ui.add_space(6.0);
                                     ui.label(
@@ -1172,8 +1381,8 @@ impl Browser {
                             });
                         });
                     ui.add_space(2.0);
-                    theme::hline(ui);
                 }
+                theme::hline(ui);
 
                 let rows = self.filtered_rows();
                 rendered_rows = rows.clone();
@@ -1237,7 +1446,12 @@ impl Browser {
                 }
                 table = table
                     .column(Column::initial(54.0).at_least(44.0).clip(true))
-                    .column(Column::initial(84.0).at_least(68.0).clip(true));
+                    .column(
+                        Column::initial(84.0)
+                            .at_least(68.0)
+                            .clip(true)
+                            .resizable(false),
+                    );
 
                 let mut cols: Vec<(&str, usize)> = vec![("Имя", 0)];
                 if multi {
@@ -1288,6 +1502,9 @@ impl Browser {
                                         },
                                     );
                                 } else {
+                                    if col_id == 0 {
+                                        ui.add_space(6.0);
+                                    }
                                     btn_fn(ui);
                                 }
                             });
@@ -1415,6 +1632,22 @@ impl Browser {
                                         self.scroll_selection = true;
                                         ui.close_menu();
                                     }
+                                    if multi
+                                        && item.archive_idx != self.active_archive
+                                        && ui
+                                            .button(format!(
+                                                "Открыть во вкладке {}",
+                                                item.archive_stem
+                                            ))
+                                            .clicked()
+                                    {
+                                        self.active_archive = item.archive_idx;
+                                        self.all_tabs = false;
+                                        self.row_cache = None;
+                                        clicked = Some(item.target);
+                                        self.scroll_selection = true;
+                                        ui.close_menu();
+                                    }
                                     ui.separator();
                                     menu(
                                         ui,
@@ -1487,8 +1720,19 @@ impl Browser {
             self.selected = Some(target);
             if double {
                 command = Some(Command::Preview);
-            } else if self.preview_open && has_archives {
-                self.select(target, ctx);
+            } else if self.preview_open {
+                if has_archives {
+                    self.select(target, ctx);
+                } else if let Some(file) = self.folder_files.get(target.index)
+                    && !file.directory
+                    && file
+                        .path
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("txd"))
+                {
+                    let path = file.path.clone();
+                    self.open_txd_file(path, ctx);
+                }
             }
         }
         if let Some(command) = command {
@@ -1516,15 +1760,33 @@ impl Browser {
         }
     }
     fn preview_ui(&mut self, ctx: &egui::Context) {
-        let selected_entry = self.selected.and_then(|sel| {
-            self.archives
-                .get(sel.archive)
-                .and_then(|a| a.entries().get(sel.index))
-                .map(|e| (sel, e.name.clone(), e.size, self.archive_label(sel.archive)))
+        let standalone = self.standalone_txd.as_ref().and_then(|path| {
+            let editor = self.txd_editor.as_ref()?;
+            editor.disk_path.as_ref()?;
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("texture.txd")
+                .to_owned();
+            Some((path.clone(), name, editor.disk_dirty))
         });
-        let paired = self.selected.and_then(|sel| self.find_paired_asset(sel));
+        let selected_entry = if standalone.is_some() {
+            None
+        } else {
+            self.selected.and_then(|sel| {
+                self.archives
+                    .get(sel.archive)
+                    .and_then(|a| a.entries().get(sel.index))
+                    .map(|e| (sel, e.name.clone(), e.size, self.archive_label(sel.archive)))
+            })
+        };
+        let paired = selected_entry
+            .as_ref()
+            .and_then(|(sel, ..)| self.find_paired_asset(*sel));
         let mut reload_skin = false;
         let mut jump_to = None;
+        let mut trigger_save = false;
+        let mut close_standalone = false;
 
         egui::CentralPanel::default()
             .frame(
@@ -1533,19 +1795,125 @@ impl Browser {
                     .inner_margin(Margin::same(10)),
             )
             .show(ctx, |ui| {
-                let Some((sel, entry_name, entry_size, arch_label)) = selected_entry else {
+                let mut header_archive_idx = None;
+                let mut chosen_variant = self.variant_selected;
+                if let Some((path, name, dirty)) = standalone {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        ui.label(egui::RichText::new(&name).size(14.0).strong());
+                        if dirty {
+                            ui.label(
+                                egui::RichText::new("изменён")
+                                    .size(11.5)
+                                    .color(theme::STATUS_MODIFIED),
+                            );
+                        }
+                        let parent_hint = path
+                            .parent()
+                            .and_then(|p| p.file_name())
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "Внешний TXD".into());
+                        ui.label(
+                            egui::RichText::new(format!("· {parent_hint}"))
+                                .size(12.0)
+                                .color(theme::TEXT_SECONDARY),
+                        )
+                        .on_hover_text(path.display().to_string());
+                        ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                            if theme::icon_button(
+                                ui,
+                                theme::Icon::Close,
+                                "Закрыть TXD (Ctrl+W)",
+                                !self.busy,
+                            )
+                            .clicked()
+                            {
+                                close_standalone = true;
+                            }
+                            if theme::tab_toggle(ui, self.show_details, "Сведения").clicked() {
+                                self.show_details = true;
+                            }
+                            if theme::tab_toggle(ui, !self.show_details, "Просмотр").clicked() {
+                                self.show_details = false;
+                            }
+                            if dirty {
+                                ui.separator();
+                                if theme::primary_button(
+                                    ui,
+                                    theme::Icon::Save,
+                                    "Сохранить",
+                                    "Сохранить файл TXD (Ctrl+S)",
+                                    !self.busy,
+                                )
+                                .clicked()
+                                {
+                                    trigger_save = true;
+                                }
+                            }
+                        });
+                    });
+                    ui.add_space(4.0);
+                    theme::hline(ui);
+                    ui.add_space(4.0);
+                } else if let Some((sel, entry_name, entry_size, arch_label)) = selected_entry {
+                    header_archive_idx = Some(sel.archive);
+                    let edit_tag = self.pending_edit_tag(sel.archive, &entry_name);
+
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        ui.label(egui::RichText::new(&entry_name).size(14.0).strong());
+                        if let Some((tag, color)) = edit_tag {
+                            let text = if tag == "ЗАМ" { "изменён" } else { "удаляется" };
+                            ui.label(egui::RichText::new(text).size(11.5).color(color));
+                        }
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "· {} · {}",
+                                arch_label,
+                                theme::format_size(entry_size)
+                            ))
+                            .size(12.0)
+                            .color(theme::TEXT_SECONDARY),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                            if theme::tab_toggle(ui, self.show_details, "Сведения").clicked() {
+                                self.show_details = true;
+                            }
+                            if theme::tab_toggle(ui, !self.show_details, "Просмотр").clicked() {
+                                self.show_details = false;
+                            }
+                            if let Some((paired_target, paired_name)) = &paired {
+                                ui.separator();
+                                if theme::tool_button(
+                                    ui,
+                                    theme::Icon::ScanEye,
+                                    &format!("Открыть {paired_name}"),
+                                    "Перейти к парному ресурсу",
+                                    !self.busy,
+                                )
+                                .clicked()
+                                {
+                                    jump_to = Some(*paired_target);
+                                }
+                            }
+                        });
+                    });
+                    ui.add_space(4.0);
+                    theme::hline(ui);
+                    ui.add_space(4.0);
+                } else {
                     ui.centered_and_justified(|ui| {
                         ui.vertical_centered(|ui| {
                             ui.label(
                                 egui::RichText::new(if self.archives.is_empty() {
-                                    "Откройте IMG-архив или перетащите файлы в окно"
+                                    "Откройте IMG-архив, файл TXD или перетащите их в окно"
                                 } else {
                                     "Выберите ресурс в списке слева"
                                 })
                                 .color(theme::TEXT_SECONDARY),
                             );
                             if self.archives.is_empty() {
-                                ui.add_space(6.0);
+                                ui.add_space(8.0);
                                 ui.horizontal(|ui| {
                                     if theme::tool_button(
                                         ui,
@@ -1557,6 +1925,17 @@ impl Browser {
                                     .clicked()
                                     {
                                         self.command(Command::Open, ctx);
+                                    }
+                                    if theme::tool_button(
+                                        ui,
+                                        theme::Icon::Image,
+                                        "Открыть TXD…",
+                                        "Открыть отдельный словарь текстур",
+                                        !self.busy,
+                                    )
+                                    .clicked()
+                                    {
+                                        self.command(Command::OpenTxd, ctx);
                                     }
                                     if theme::tool_button(
                                         ui,
@@ -1574,53 +1953,8 @@ impl Browser {
                         });
                     });
                     return;
-                };
-
-                let mut chosen_variant = self.variant_selected;
-                let edit_tag = self.pending_edit_tag(sel.archive, &entry_name);
-
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    ui.label(egui::RichText::new(&entry_name).size(14.0).strong());
-                    if let Some((tag, color)) = edit_tag {
-                        let text = if tag == "ЗАМ" { "изменён" } else { "удаляется" };
-                        ui.label(egui::RichText::new(text).size(11.5).color(color));
-                    }
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "· {} · {}",
-                            arch_label,
-                            theme::format_size(entry_size)
-                        ))
-                        .size(12.0)
-                        .color(theme::TEXT_SECONDARY),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                        if theme::tab_toggle(ui, self.show_details, "Сведения").clicked() {
-                            self.show_details = true;
-                        }
-                        if theme::tab_toggle(ui, !self.show_details, "Просмотр").clicked() {
-                            self.show_details = false;
-                        }
-                        if let Some((paired_target, paired_name)) = &paired {
-                            ui.separator();
-                            if theme::tool_button(
-                                ui,
-                                theme::Icon::ScanEye,
-                                &format!("Открыть {paired_name}"),
-                                "Перейти к парному ресурсу",
-                                !self.busy,
-                            )
-                            .clicked()
-                            {
-                                jump_to = Some(*paired_target);
-                            }
-                        }
-                    });
-                });
-                ui.add_space(4.0);
-                theme::hline(ui);
-                ui.add_space(4.0);
+                }
+                let _ = header_archive_idx;
 
                 if !self.show_details && self.model.is_some() {
                     if !self.remap_targets.is_empty() {
@@ -1801,7 +2135,9 @@ impl Browser {
                         });
                 } else if let Some(editor) = &mut self.txd_editor {
                     let can_edit = !self.busy
-                        && (self.edits.is_empty() || self.active_archive == editor.target.archive);
+                        && (editor.disk_path.is_some()
+                            || self.edits.is_empty()
+                            || self.edited_archive == Some(editor.target.archive));
                     editor.show(ui, can_edit);
                 } else if let Some(model) = &mut self.model {
                     let vinyl_handle = self.vinyl_texture.clone();
@@ -1846,7 +2182,11 @@ impl Browser {
                     self.select_variant(chosen_variant, ctx);
                 }
             });
-        if let Some(target) = jump_to {
+        if close_standalone {
+            self.close_standalone_txd();
+        } else if trigger_save {
+            self.save_current(ctx);
+        } else if let Some(target) = jump_to {
             self.selection.clear();
             self.selection.insert(target);
             self.scroll_selection = true;
@@ -1881,7 +2221,7 @@ fn search_field(
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 let clear_width = theme::CONTROL_H + 6.0;
-                let grouping_width = if multiple { 50.0 } else { 0.0 };
+                let grouping_width = if multiple { 66.0 } else { 0.0 };
                 let response = ui.add_sized(
                     [
                         (ui.available_width() - clear_width - grouping_width - 8.0).max(80.0),
@@ -1889,7 +2229,11 @@ fn search_field(
                     ],
                     egui::TextEdit::singleline(filter)
                         .id_salt("archive_search")
-                        .hint_text("Поиск ресурса… (Ctrl+F)"),
+                        .hint_text(if multiple {
+                            "Поиск по всем вкладкам… (Ctrl+F)"
+                        } else {
+                            "Поиск ресурса… (Ctrl+F)"
+                        }),
                 );
                 if theme::icon_button(
                     ui,
@@ -1907,7 +2251,7 @@ fn search_field(
                     ui.ctx().request_repaint();
                 }
                 if multiple {
-                    ui.menu_button("Вид", |ui| {
+                    theme::panel_menu(ui, "Вид", |ui| {
                         ui.checkbox(grouped, "Группировать по архивам");
                     });
                 }
@@ -2067,6 +2411,26 @@ mod search_tests {
                 province_archive::Archive::open(path).expect("archive"),
             ));
         }
+        browser.active_archive = 0;
+        assert_eq!(
+            browser
+                .filtered_rows()
+                .iter()
+                .filter(|r| matches!(r, RowItem::Entry(_)))
+                .count(),
+            1
+        );
+        browser.active_archive = 1;
+        browser.filter = "car".into();
+        assert_eq!(
+            browser
+                .filtered_rows()
+                .iter()
+                .filter(|r| matches!(r, RowItem::Entry(_)))
+                .count(),
+            0
+        );
+        browser.all_tabs = true;
         for (query, expected) in [("txd", 2), ("car", 1), ("SKIN", 1), ("absent", 0)] {
             browser.filter = query.into();
             assert_eq!(
@@ -2169,5 +2533,51 @@ mod search_tests {
             ))
         );
         std::fs::remove_dir_all(root).expect("fixture cleanup");
+    }
+    #[test]
+    fn standalone_txd_and_panel_controls_render_cleanly() {
+        let mut minimal_txd = Vec::new();
+        // Outer TXD chunk (0x16), payload = struct(0x01, 4 bytes: count=0) + extension(0x03, 0 bytes)
+        let ver = 0x1803_FFFFu32.to_le_bytes();
+        minimal_txd.extend_from_slice(&0x16u32.to_le_bytes());
+        minimal_txd.extend_from_slice(&28u32.to_le_bytes());
+        minimal_txd.extend_from_slice(&ver);
+        minimal_txd.extend_from_slice(&0x01u32.to_le_bytes());
+        minimal_txd.extend_from_slice(&4u32.to_le_bytes());
+        minimal_txd.extend_from_slice(&ver);
+        minimal_txd.extend_from_slice(&0u32.to_le_bytes());
+        minimal_txd.extend_from_slice(&0x03u32.to_le_bytes());
+        minimal_txd.extend_from_slice(&0u32.to_le_bytes());
+        minimal_txd.extend_from_slice(&ver);
+
+        let doc = crate::txd_document::Document::parse(&minimal_txd).expect("minimal TXD");
+        let path = PathBuf::from("standalone_test.txd");
+        let mut browser = Browser::new();
+        browser.standalone_txd = Some(path.clone());
+        browser.txd_editor = Some(crate::texture_editor::Editor::new_standalone(doc, path));
+
+        let ctx = egui::Context::default();
+        theme::apply_style(&ctx);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            browser.manager_ui(ctx);
+            egui::Window::new("control_probe").show(ctx, |ui| {
+                let mut active = true;
+                let r1 = theme::tab_toggle(ui, active, "Все вкладки");
+                let r2 = theme::bordered_button(
+                    ui,
+                    "Открыть все IMG",
+                    Vec2::new(120.0, theme::CONTROL_H),
+                );
+                assert!((r1.rect.height() - theme::CONTROL_H).abs() <= 1.0);
+                assert!((r2.rect.height() - theme::CONTROL_H).abs() <= 1.0);
+                theme::panel_menu(ui, "Канал: RGBA", |ui| {
+                    let _ = ui.checkbox(&mut active, "RGBA");
+                });
+            });
+        });
+        assert!(browser.standalone_txd.is_some());
+        browser.close_standalone_txd();
+        assert!(browser.standalone_txd.is_none());
+        assert!(browser.txd_editor.is_none());
     }
 }

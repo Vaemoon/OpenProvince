@@ -38,6 +38,7 @@ enum Message {
     Variants(usize, Vec<preview::Variant>),
     VariantImages(usize, usize, Result<Vec<txd::Texture>, String>),
     Vinyl(usize, Result<txd::Texture, String>),
+    StandaloneTxd(PathBuf, Result<(txd_document::Document, Vec<u8>), String>),
     Progress(usize, usize),
     Status(String),
     Folder(Result<(PathBuf, Vec<ui::File>), String>),
@@ -51,7 +52,10 @@ struct Browser {
     help_open: bool,
     archives: Vec<Arc<Archive>>,
     active_archive: usize,
+    edited_archive: Option<usize>,
+    all_tabs: bool,
     group_by_archive: bool,
+    standalone_txd: Option<PathBuf>,
     filter: String,
     selected: Option<EntryRef>,
     preview: String,
@@ -108,7 +112,10 @@ impl Browser {
             help_open: false,
             archives: Vec::new(),
             active_archive: 0,
+            edited_archive: None,
+            all_tabs: false,
             group_by_archive: true,
+            standalone_txd: None,
             filter: String::new(),
             selected: None,
             preview: String::new(),
@@ -196,9 +203,7 @@ impl Browser {
         let Some(archive) = self.archives.get(target.archive).cloned() else {
             return;
         };
-        if self.edits.is_empty() {
-            self.active_archive = target.archive;
-        }
+        self.standalone_txd = None;
         let is_dff = archive
             .entries()
             .get(target.index)
@@ -240,7 +245,7 @@ impl Browser {
             .entries()
             .get(target.index)
             .is_some_and(|e| e.name.to_ascii_lowercase().ends_with(".txd"));
-        let replacement = if target.archive == self.active_archive {
+        let replacement = if Some(target.archive) == self.edited_archive {
             archive.entries().get(target.index).and_then(|entry| {
                 self.edits.iter().find_map(|edit| match edit {
                     Edit::Replace { name, source } if name.eq_ignore_ascii_case(&entry.name) => {
@@ -394,6 +399,9 @@ impl Browser {
     }
 
     fn stage(&mut self, edit: Edit) {
+        if self.edited_archive.is_none() {
+            self.edited_archive = Some(self.active_archive);
+        }
         if let Edit::Replace { name, .. } | Edit::Remove { name } = &edit {
             self.edits.retain(|current| match current {
                 Edit::Replace { name: current, .. } | Edit::Remove { name: current } => {
@@ -406,9 +414,16 @@ impl Browser {
     }
 
     fn add_files(&mut self, paths: Vec<PathBuf>) {
+        if !self.edits.is_empty() && self.edited_archive != Some(self.active_archive) {
+            self.status = "Сначала сохраните (Ctrl+S) или отмените правки другого архива.".into();
+            return;
+        }
         let Some(archive) = self.primary_archive().cloned() else {
             return;
         };
+        if self.edits.is_empty() {
+            self.edited_archive = Some(self.active_archive);
+        }
         for source in paths {
             let name = source
                 .file_name()
@@ -450,7 +465,38 @@ impl Browser {
     }
 
     fn open(&mut self, path: PathBuf, ctx: &egui::Context) {
-        self.open_many(vec![path], false, ctx);
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("txd"))
+        {
+            self.open_txd_file(path, ctx);
+        } else {
+            self.open_many(vec![path], false, ctx);
+        }
+    }
+
+    pub(crate) fn open_txd_file(&mut self, path: PathBuf, ctx: &egui::Context) {
+        if self.txd_editor.as_ref().is_some_and(|e| e.busy) {
+            self.status = "Дождитесь завершения операции с текстурой.".into();
+            return;
+        }
+        if self.txd_editor.as_ref().is_some_and(|e| e.disk_dirty) {
+            self.status = "Сначала сохраните (Ctrl+S) или закройте изменённый TXD.".into();
+            return;
+        }
+        self.busy = true;
+        let sender = self.sender.clone();
+        let ctx = ctx.clone();
+        thread::spawn(move || {
+            let result = std::fs::read(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|raw| {
+                    let decoded = Profile::inspected_client().decode_file(&path, &raw);
+                    txd_document::Document::parse(&decoded).map(|doc| (doc, decoded))
+                });
+            let _ = sender.send(Message::StandaloneTxd(path, result));
+            ctx.request_repaint();
+        });
     }
 
     pub(crate) fn open_many(&mut self, paths: Vec<PathBuf>, append: bool, ctx: &egui::Context) {
@@ -516,13 +562,26 @@ impl Browser {
         if index >= self.archives.len() {
             return;
         }
-        if !self.edits.is_empty() && self.active_archive == index {
+        if !self.edits.is_empty() && self.edited_archive == Some(index) {
             self.status = "Нельзя закрыть архив с несохранёнными изменениями.".into();
             return;
         }
-        self.txd_editor = None;
+        if self
+            .txd_editor
+            .as_ref()
+            .is_some_and(|e| e.disk_path.is_none() && e.target.archive == index)
+        {
+            self.txd_editor = None;
+        }
         self.archives.remove(index);
         self.row_cache = None;
+        if let Some(edited) = self.edited_archive {
+            self.edited_archive = match edited.cmp(&index) {
+                std::cmp::Ordering::Greater => Some(edited - 1),
+                std::cmp::Ordering::Equal => None,
+                std::cmp::Ordering::Less => Some(edited),
+            };
+        }
         if let Some(sel) = self.selected {
             self.selected = match sel.archive.cmp(&index) {
                 std::cmp::Ordering::Equal => None,
@@ -549,6 +608,9 @@ impl Browser {
             self.active_archive -= 1;
         } else if self.active_archive >= self.archives.len() {
             self.active_archive = 0;
+        }
+        if self.archives.len() <= 1 {
+            self.all_tabs = false;
         }
         if self.archives.is_empty() {
             self.model = None;
@@ -623,12 +685,25 @@ impl Browser {
         }
         self.archives[index] = Arc::new(archive);
         self.edits.clear();
+        self.edited_archive = None;
         self.row_cache = None;
         self.update_archive_status();
         self.status = format!("Сохранено: {}", self.archive_label(index));
     }
 
     fn save(&mut self, ctx: &egui::Context) {
+        if let Some(editor) = &mut self.txd_editor
+            && editor.disk_path.is_some()
+        {
+            if let Some(output) = rfd::FileDialog::new()
+                .add_filter("RenderWare TXD", &["txd"])
+                .set_file_name(&editor.name)
+                .save_file()
+            {
+                editor.save_to_disk(Some(output), ctx);
+            }
+            return;
+        }
         let Some(archive) = self.primary_archive().cloned() else {
             return;
         };
@@ -655,10 +730,18 @@ impl Browser {
     }
 
     fn save_current(&mut self, ctx: &egui::Context) {
+        if let Some(editor) = &mut self.txd_editor
+            && editor.disk_path.is_some()
+        {
+            if editor.disk_dirty {
+                editor.save_to_disk(None, ctx);
+            }
+            return;
+        }
         if self.edits.is_empty() {
             return;
         }
-        let target_idx = self.active_archive;
+        let target_idx = self.edited_archive.unwrap_or(self.active_archive);
         let Some(archive) = self.archives.get(target_idx).cloned() else {
             return;
         };
@@ -709,6 +792,8 @@ impl Browser {
             return;
         };
         let archives = self.archives.clone();
+        let active_archive = self.active_archive;
+        let all_tabs = self.all_tabs;
         let selected = self.selection.clone();
         self.busy = true;
         self.cancel
@@ -720,16 +805,27 @@ impl Browser {
             let mut count = 0;
             let mut warnings = 0;
             let targets: Vec<EntryRef> = if all {
-                archives
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(ai, a)| {
-                        (0..a.entries().len()).map(move |ei| EntryRef {
-                            archive: ai,
+                if all_tabs {
+                    archives
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(ai, a)| {
+                            (0..a.entries().len()).map(move |ei| EntryRef {
+                                archive: ai,
+                                index: ei,
+                            })
+                        })
+                        .collect()
+                } else if let Some(a) = archives.get(active_archive) {
+                    (0..a.entries().len())
+                        .map(|ei| EntryRef {
+                            archive: active_archive,
                             index: ei,
                         })
-                    })
-                    .collect()
+                        .collect()
+                } else {
+                    Vec::new()
+                }
             } else {
                 selected.into_iter().collect()
             };
@@ -780,7 +876,7 @@ impl eframe::App for Browser {
             let target = editor.target;
             let name = editor.name.clone();
             if self.edits.is_empty() {
-                self.active_archive = target.archive;
+                self.edited_archive = Some(target.archive);
             }
             self.stage(Edit::Replace { name, source });
         }
@@ -870,6 +966,9 @@ impl eframe::App for Browser {
                             if !append {
                                 self.archives.clear();
                                 self.active_archive = 0;
+                                self.edited_archive = None;
+                                self.all_tabs = false;
+                                self.standalone_txd = None;
                                 self.edits.clear();
                                 self.selected = None;
                                 self.selection.clear();
@@ -884,10 +983,13 @@ impl eframe::App for Browser {
                                 self.base_images.clear();
                                 self.variants.clear();
                                 self.variant_selected = 0;
+                            } else if !new_archives.is_empty() {
+                                self.active_archive = self.archives.len();
                             }
                             for arch in new_archives {
                                 self.archives.push(Arc::new(arch));
                             }
+                            self.vinyls_loaded = false;
                             self.row_cache = None;
                             self.update_archive_status();
                             if let Some(name) = self.initial_selection.take()
@@ -930,32 +1032,7 @@ impl eframe::App for Browser {
                                     })
                                     .map(|e| e.name.as_str())
                                     .unwrap_or_default();
-                                let report = inspect(name, &bytes);
-                                let mut text = format!(
-                                    "{}\nFormat: {}\nDecoded bytes: {}\nLogical bytes: {:?}\n{}\n\nHex preview (first 512 bytes)\n",
-                                    name,
-                                    report.format,
-                                    bytes.len(),
-                                    report.logical_size,
-                                    report.warning.unwrap_or_default()
-                                );
-                                for (i, row) in bytes[..bytes.len().min(512)].chunks(16).enumerate()
-                                {
-                                    text.push_str(&format!("{:08X}  ", i * 16));
-                                    for byte in row {
-                                        text.push_str(&format!("{byte:02X} "));
-                                    }
-                                    text.push_str("  ");
-                                    for byte in row {
-                                        text.push(if byte.is_ascii_graphic() || *byte == b' ' {
-                                            char::from(*byte)
-                                        } else {
-                                            '.'
-                                        });
-                                    }
-                                    text.push('\n');
-                                }
-                                text
+                                format_hex_report(name, &bytes)
                             }
                         };
                     }
@@ -980,6 +1057,37 @@ impl eframe::App for Browser {
                         }
                     }
                 }
+                Message::StandaloneTxd(path, result) => {
+                    self.busy = false;
+                    match result {
+                        Ok((document, bytes)) => {
+                            let name = path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("texture.txd")
+                                .to_owned();
+                            let count = document.len();
+                            self.standalone_txd = Some(path.clone());
+                            self.model = None;
+                            self.model_error.clear();
+                            self.images.clear();
+                            self.base_images.clear();
+                            self.variants.clear();
+                            self.remap_targets.clear();
+                            self.vinyl_selected = None;
+                            self.vinyl_texture = None;
+                            self.preview_open = true;
+                            self.preview = format_hex_report(&name, &bytes);
+                            self.txd_editor =
+                                Some(texture_editor::Editor::new_standalone(document, path.clone()));
+                            self.status = format!(
+                                "{name} — {count} текстур · {}",
+                                theme::format_size(bytes.len() as u64)
+                            );
+                        }
+                        Err(error) => self.status = error,
+                    }
+                }
                 Message::Progress(done, total) => self.progress = Some((done, total)),
                 Message::Folder(result) => {
                     self.busy = false;
@@ -987,24 +1095,28 @@ impl eframe::App for Browser {
                         Ok((path, files)) => {
                             self.folder = path;
                             self.address = self.folder.display().to_string();
-                            self.txd_editor = None;
                             self.folder_files = files;
                             self.row_cache = None;
                             self.archives.clear();
                             self.active_archive = 0;
+                            self.edited_archive = None;
+                            self.all_tabs = false;
                             self.selected = None;
                             self.selection.clear();
                             self.preview_open = true;
                             self.generation += 1;
                             self.preview_epoch
                                 .store(self.generation, std::sync::atomic::Ordering::Relaxed);
-                            self.model = None;
-                            self.images.clear();
-                            self.base_images.clear();
-                            self.variants.clear();
-                            self.preview.clear();
-                            self.model_error.clear();
-                            self.status = format!("{} элементов", self.folder_files.len());
+                            if self.standalone_txd.is_none() {
+                                self.txd_editor = None;
+                                self.model = None;
+                                self.images.clear();
+                                self.base_images.clear();
+                                self.variants.clear();
+                                self.preview.clear();
+                                self.model_error.clear();
+                                self.status = format!("{} элементов", self.folder_files.len());
+                            }
                         }
                         Err(error) => self.status = error,
                     }
@@ -1025,6 +1137,11 @@ impl eframe::App for Browser {
                 .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("img")))
                 .cloned()
                 .collect();
+            let txds: Vec<PathBuf> = dropped
+                .iter()
+                .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("txd")))
+                .cloned()
+                .collect();
             let images: Vec<PathBuf> = dropped
                 .iter()
                 .filter(|p| {
@@ -1041,14 +1158,46 @@ impl eframe::App for Browser {
             } else if !images.is_empty()
                 && images.len() == dropped.len()
                 && let Some(editor) = &mut self.txd_editor
-                && (self.edits.is_empty() || self.active_archive == editor.target.archive)
+                && (editor.disk_path.is_some()
+                    || self.edits.is_empty()
+                    || self.edited_archive == Some(editor.target.archive))
             {
                 editor.import_paths(images, ctx);
             } else if !self.archives.is_empty() {
                 self.add_files(dropped);
+            } else if let Some(txd) = txds.into_iter().next() {
+                self.open_txd_file(txd, ctx);
             }
         }
     }
+}
+
+fn format_hex_report(name: &str, bytes: &[u8]) -> String {
+    let report = inspect(name, bytes);
+    let mut text = format!(
+        "{}\nFormat: {}\nDecoded bytes: {}\nLogical bytes: {:?}\n{}\n\nHex preview (first 512 bytes)\n",
+        name,
+        report.format,
+        bytes.len(),
+        report.logical_size,
+        report.warning.unwrap_or_default()
+    );
+    for (i, row) in bytes[..bytes.len().min(512)].chunks(16).enumerate() {
+        text.push_str(&format!("{:08X}  ", i * 16));
+        for byte in row {
+            text.push_str(&format!("{byte:02X} "));
+        }
+        text.push_str("  ");
+        for byte in row {
+            text.push(if byte.is_ascii_graphic() || *byte == b' ' {
+                char::from(*byte)
+            } else {
+                '.'
+            });
+        }
+        text.push('\n');
+    }
+    text
 }
 
 fn main() -> eframe::Result<()> {
@@ -1158,10 +1307,26 @@ fn main() -> eframe::Result<()> {
             let mut browser = Browser::new();
             browser.initial_selection = selected;
             browser.initial_variant = variant;
-            if !initial_archives.is_empty() {
-                browser.open_many(initial_archives, false, &creation.egui_ctx);
+            let imgs: Vec<PathBuf> = initial_archives
+                .iter()
+                .filter(|p| !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("txd")))
+                .cloned()
+                .collect();
+            let txd = initial_archives
+                .into_iter()
+                .find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("txd")));
+            if !imgs.is_empty() {
+                browser.open_many(imgs, false, &creation.egui_ctx);
             } else {
-                browser.browse(browser.folder.clone(), &creation.egui_ctx);
+                let start_folder = txd
+                    .as_ref()
+                    .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+                    .filter(|p| p.is_dir())
+                    .unwrap_or_else(|| browser.folder.clone());
+                browser.browse(start_folder, &creation.egui_ctx);
+            }
+            if let Some(txd_path) = txd {
+                browser.open_txd_file(txd_path, &creation.egui_ctx);
             }
             Ok(Box::new(browser))
         }),

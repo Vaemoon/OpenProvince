@@ -3,17 +3,18 @@ use eframe::egui::{self, Align, Color32, CornerRadius, Margin, Stroke, Vec2};
 
 pub const BG_CHROME: Color32 = Color32::from_rgb(30, 30, 32);
 pub const BG_PANEL: Color32 = Color32::from_rgb(37, 37, 40);
-pub const BG_SURFACE: Color32 = Color32::from_rgb(45, 45, 48);
-pub const BG_ELEVATED: Color32 = Color32::from_rgb(56, 56, 61);
-pub const BG_INPUT: Color32 = Color32::from_rgb(24, 24, 26);
+pub const BG_SURFACE: Color32 = Color32::from_rgb(46, 46, 50);
+pub const BG_ELEVATED: Color32 = Color32::from_rgb(58, 58, 64);
+pub const BG_INPUT: Color32 = Color32::from_rgb(24, 24, 27);
 pub const BG_VIEWPORT: Color32 = Color32::from_rgb(42, 44, 48);
 
-pub const BORDER_LINE: Color32 = Color32::from_rgb(51, 51, 55);
-pub const BORDER_INPUT: Color32 = Color32::from_rgb(66, 66, 72);
+pub const BORDER_LINE: Color32 = Color32::from_rgb(53, 53, 58);
+pub const BORDER_INPUT: Color32 = Color32::from_rgb(72, 74, 82);
+pub const BORDER_HOVER: Color32 = Color32::from_rgb(102, 106, 118);
 
-pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(224, 224, 228);
-pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(154, 156, 164);
-pub const TEXT_MUTED: Color32 = Color32::from_rgb(110, 112, 120);
+pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(226, 228, 232);
+pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(156, 158, 166);
+pub const TEXT_MUTED: Color32 = Color32::from_rgb(112, 114, 122);
 
 pub const ACCENT: Color32 = Color32::from_rgb(76, 114, 156);
 pub const SELECTION_BG: Color32 = Color32::from_rgb(54, 72, 94);
@@ -120,31 +121,31 @@ pub fn visuals() -> egui::Visuals {
     visuals.widgets.noninteractive.weak_bg_fill = BG_PANEL;
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, BORDER_LINE);
     visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, TEXT_SECONDARY);
-    visuals.widgets.noninteractive.corner_radius = CornerRadius::same(2);
+    visuals.widgets.noninteractive.corner_radius = CornerRadius::same(3);
 
     visuals.widgets.inactive.bg_fill = BG_SURFACE;
     visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
-    visuals.widgets.inactive.bg_stroke = Stroke::NONE;
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, BORDER_LINE);
     visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT_PRIMARY);
-    visuals.widgets.inactive.corner_radius = CornerRadius::same(2);
+    visuals.widgets.inactive.corner_radius = CornerRadius::same(3);
 
     visuals.widgets.hovered.bg_fill = BG_ELEVATED;
     visuals.widgets.hovered.weak_bg_fill = BG_ELEVATED;
-    visuals.widgets.hovered.bg_stroke = Stroke::NONE;
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, BORDER_HOVER);
     visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, Color32::WHITE);
-    visuals.widgets.hovered.corner_radius = CornerRadius::same(2);
+    visuals.widgets.hovered.corner_radius = CornerRadius::same(3);
 
     visuals.widgets.active.bg_fill = SELECTION_BG;
     visuals.widgets.active.weak_bg_fill = SELECTION_BG;
-    visuals.widgets.active.bg_stroke = Stroke::NONE;
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, ACCENT);
     visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, Color32::WHITE);
-    visuals.widgets.active.corner_radius = CornerRadius::same(2);
+    visuals.widgets.active.corner_radius = CornerRadius::same(3);
 
     visuals.widgets.open.bg_fill = BG_ELEVATED;
     visuals.widgets.open.weak_bg_fill = BG_ELEVATED;
-    visuals.widgets.open.bg_stroke = Stroke::NONE;
+    visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, ACCENT);
     visuals.widgets.open.fg_stroke = Stroke::new(1.0_f32, Color32::WHITE);
-    visuals.widgets.open.corner_radius = CornerRadius::same(2);
+    visuals.widgets.open.corner_radius = CornerRadius::same(3);
 
     visuals.striped = false;
     visuals
@@ -154,7 +155,7 @@ pub fn apply_style(ctx: &egui::Context) {
     ctx.set_visuals(visuals());
     let mut style = (*ctx.style()).clone();
     style.spacing.item_spacing = egui::vec2(6.0, 4.0);
-    style.spacing.button_padding = egui::vec2(7.0, 3.0);
+    style.spacing.button_padding = egui::vec2(8.0, 3.0);
     style.spacing.menu_margin = Margin::same(4);
     style.spacing.indent = 14.0;
     style.spacing.interact_size.y = CONTROL_H;
@@ -182,7 +183,7 @@ pub fn apply_style(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
-/// Единая плоская кнопка панели инструментов (высота CONTROL_H).
+/// Плоская кнопка панели с иконкой и текстом (высота CONTROL_H).
 pub fn tool_button(
     ui: &mut egui::Ui,
     icon_kind: Icon,
@@ -214,7 +215,7 @@ pub fn primary_button(
         )
         .fill(ACCENT)
         .stroke(Stroke::NONE)
-        .corner_radius(2.0)
+        .corner_radius(3.0)
         .min_size(Vec2::new(0.0, CONTROL_H));
         ui.add_enabled(true, button).on_hover_text(tooltip)
     } else {
@@ -235,30 +236,61 @@ pub fn icon_button(
     ui.add_enabled(enabled, button).on_hover_text(tooltip)
 }
 
-pub fn tab_toggle(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::Response {
-    let (fill, text_color) = if selected {
-        (BG_ELEVATED, TEXT_PRIMARY)
-    } else {
-        (Color32::TRANSPARENT, TEXT_SECONDARY)
-    };
-    ui.add(
-        egui::Button::new(egui::RichText::new(label).size(12.0).color(text_color))
-            .fill(fill)
-            .stroke(Stroke::NONE)
-            .corner_radius(2.0)
-            .min_size(Vec2::new(0.0, CONTROL_H)),
-    )
+pub fn bordered_button(ui: &mut egui::Ui, label: &str, min_size: Vec2) -> egui::Response {
+    ui.scope(|ui| {
+        let inactive = &mut ui.style_mut().visuals.widgets.inactive;
+        inactive.weak_bg_fill = BG_SURFACE;
+        inactive.bg_stroke = Stroke::new(1.0_f32, BORDER_INPUT);
+        inactive.fg_stroke = Stroke::new(1.0_f32, TEXT_PRIMARY);
+        ui.add_sized(
+            min_size,
+            egui::Button::new(egui::RichText::new(label).size(12.5)),
+        )
+    })
+    .inner
 }
 
-/// Единое выпадающее меню в панелях инструментов (высота CONTROL_H).
+pub fn tab_toggle(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::Response {
+    ui.scope(|ui| {
+        let hovered = &mut ui.style_mut().visuals.widgets.hovered;
+        hovered.bg_stroke = Stroke::new(1.0_f32, if selected { BORDER_HOVER } else { BORDER_LINE });
+        let inactive = &mut ui.style_mut().visuals.widgets.inactive;
+        if selected {
+            inactive.weak_bg_fill = BG_ELEVATED;
+            inactive.bg_stroke = Stroke::new(1.0_f32, BORDER_INPUT);
+            inactive.fg_stroke = Stroke::new(1.0_f32, TEXT_PRIMARY);
+        } else {
+            inactive.weak_bg_fill = Color32::TRANSPARENT;
+            inactive.bg_stroke = Stroke::NONE;
+            inactive.fg_stroke = Stroke::new(1.0_f32, TEXT_SECONDARY);
+        }
+        ui.add(
+            egui::Button::new(egui::RichText::new(label).size(12.0))
+                .corner_radius(3.0)
+                .min_size(Vec2::new(0.0, CONTROL_H)),
+        )
+    })
+    .inner
+}
+
+/// Явно кликабельный выпадающий список с фоном, границей и стрелкой вниз.
 pub fn panel_menu<R>(
     ui: &mut egui::Ui,
-    title: impl Into<egui::WidgetText>,
+    title: impl AsRef<str>,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) {
+    let label = format!("{}  ▾", title.as_ref());
+    let button = egui::Button::new(egui::RichText::new(label).size(12.5))
+        .corner_radius(3.0)
+        .min_size(Vec2::new(0.0, CONTROL_H));
     ui.scope(|ui| {
         ui.style_mut().spacing.interact_size.y = CONTROL_H;
-        ui.menu_button(title, add_contents);
+        ui.style_mut().spacing.button_padding = egui::vec2(8.0, 3.0);
+        let inactive = &mut ui.style_mut().visuals.widgets.inactive;
+        inactive.weak_bg_fill = BG_SURFACE;
+        inactive.bg_stroke = Stroke::new(1.0_f32, BORDER_INPUT);
+        inactive.fg_stroke = Stroke::new(1.0_f32, TEXT_PRIMARY);
+        egui::menu::menu_custom_button(ui, button, add_contents);
     });
 }
 

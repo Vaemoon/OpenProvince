@@ -12,13 +12,16 @@ use std::{
 };
 
 enum Message {
-    Changed(Result<(Document, PathBuf), String>),
+    Changed(Result<(Document, Option<PathBuf>), String>),
     Image(u64, usize, bool, Option<txd::Texture>),
     Saved(Result<String, String>),
+    DiskSaved(Result<PathBuf, String>),
 }
 
 pub struct Editor {
     pub target: EntryRef,
+    pub disk_path: Option<PathBuf>,
+    pub disk_dirty: bool,
     pub name: String,
     document: Document,
     entries: Vec<Entry>,
@@ -88,11 +91,37 @@ impl Editor {
         self.status = "Изменения сохранены в IMG.".into();
     }
     pub fn new(document: Document, target: EntryRef, name: String) -> Self {
+        Self::create(document, target, None, name)
+    }
+    pub fn new_standalone(document: Document, path: PathBuf) -> Self {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("texture.txd")
+            .to_owned();
+        Self::create(
+            document,
+            EntryRef {
+                archive: usize::MAX,
+                index: 0,
+            },
+            Some(path),
+            name,
+        )
+    }
+    fn create(
+        document: Document,
+        target: EntryRef,
+        disk_path: Option<PathBuf>,
+        name: String,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel();
         let entries = document.entries();
         let rename = entries.first().map_or(String::new(), |e| e.name.clone());
         Self {
             target,
+            disk_path,
+            disk_dirty: false,
             name,
             document,
             entries,
@@ -119,6 +148,23 @@ impl Editor {
             sender,
             receiver,
         }
+    }
+    pub fn save_to_disk(&mut self, custom_path: Option<PathBuf>, ctx: &egui::Context) {
+        let Some(path) = custom_path.or_else(|| self.disk_path.clone()) else {
+            return;
+        };
+        if self.busy {
+            return;
+        }
+        let bytes = self.document.bytes();
+        let sender = self.sender.clone();
+        let ctx = ctx.clone();
+        self.busy = true;
+        thread::spawn(move || {
+            let result = crate::storage::write_file(&path, &bytes).map(|()| path);
+            let _ = sender.send(Message::DiskSaved(result));
+            ctx.request_repaint();
+        });
     }
     /// Возвращает временный .txd для постановки в очередь правок IMG.
     pub fn poll(&mut self, ctx: &egui::Context) -> Option<PathBuf> {
@@ -160,8 +206,13 @@ impl Editor {
                             self.image = None;
                             self.thumbnails.clear();
                             self.requested.clear();
-                            self.status = "Правки TXD подготовлены. Сохраните IMG: Ctrl+S.".into();
-                            staged = Some(path);
+                            if self.disk_path.is_some() {
+                                self.disk_dirty = true;
+                                self.status = "Правки TXD готовы. Сохраните файл: Ctrl+S.".into();
+                            } else {
+                                self.status = "Правки TXD подготовлены. Сохраните IMG: Ctrl+S.".into();
+                                staged = path;
+                            }
                         }
                         Err(error) => self.status = error,
                     }
@@ -204,6 +255,20 @@ impl Editor {
                 Message::Saved(result) => {
                     self.busy = false;
                     self.status = result.unwrap_or_else(|e| e);
+                }
+                Message::DiskSaved(result) => {
+                    self.busy = false;
+                    match result {
+                        Ok(path) => {
+                            self.disk_dirty = false;
+                            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                                self.name = name.to_owned();
+                            }
+                            self.status = format!("Сохранено: {}", path.display());
+                            self.disk_path = Some(path);
+                        }
+                        Err(error) => self.status = error,
+                    }
                 }
             }
         }
@@ -260,11 +325,17 @@ impl Editor {
             .pending_history
             .take()
             .unwrap_or_else(|| self.document.clone());
+        let needs_stage = self.disk_path.is_none();
         let sender = self.sender.clone();
         let ctx = ctx.clone();
         thread::spawn(move || {
-            let result = operation(&mut document)
-                .and_then(|()| stage_document(&document).map(|path| (document, path)));
+            let result = operation(&mut document).and_then(|()| {
+                if needs_stage {
+                    stage_document(&document).map(|path| (document, Some(path)))
+                } else {
+                    Ok((document, None))
+                }
+            });
             let _ = sender.send(Message::Changed(result));
             ctx.request_repaint();
         });
@@ -696,7 +767,7 @@ impl Editor {
             .id_salt("txd_entries")
             .max_height((height - 64.0).max(64.0))
             .auto_shrink([false, false])
-            .show_rows(ui, 48.0, visible.len(), |ui, range| {
+            .show_rows(ui, 46.0, visible.len(), |ui, range| {
                 for row in range {
                     let index = visible[row];
                     if !self.thumbnails.contains_key(&index) {
@@ -732,6 +803,7 @@ impl Editor {
                                         egui::Image::new(image).max_size(Vec2::splat(36.0)),
                                     );
                                 }
+                                ui.add_space(4.0);
                                 ui.vertical(|ui| {
                                     ui.spacing_mut().item_spacing.y = 1.0;
                                     ui.add(
