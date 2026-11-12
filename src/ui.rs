@@ -895,6 +895,17 @@ impl Browser {
                             Command::Info,
                             &mut command,
                         );
+                        if ui.button("О программе OpenProvince…").clicked() {
+                            self.about_open = true;
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.button("GitHub — исходный код").clicked() {
+                            ctx.open_url(egui::OpenUrl::new_tab(
+                                "https://github.com/Vaemoon/OpenProvince",
+                            ));
+                            ui.close_menu();
+                        }
                     });
                 });
 
@@ -1429,6 +1440,46 @@ impl Browser {
                     })
                     .flatten();
                 self.scroll_selection = false;
+                let table_top = ui.cursor().top();
+                let table_left = ui.cursor().left();
+                let spacing_x = ui.spacing().item_spacing.x;
+                let cols_count = if multi { 4 } else { 3 };
+                let gaps = spacing_x * (cols_count - 1) as f32;
+                let scroll_w = ui.spacing().scroll.allocated_width();
+                let total_cols_w = (ui.available_width() - scroll_w - gaps).max(210.0);
+
+                let right_mins: &[f32] = if multi { &[64.0, 44.0, 62.0] } else { &[44.0, 62.0] };
+                let right_maxs: &[f32] = if multi { &[240.0, 120.0, 160.0] } else { &[120.0, 160.0] };
+                let right_defs: &[f32] = if multi { &[108.0, 56.0, 84.0] } else { &[56.0, 84.0] };
+                let mut right_w: Vec<f32> = if multi {
+                    vec![self.col_widths[0], self.col_widths[1], self.col_widths[2]]
+                } else {
+                    vec![self.col_widths[1], self.col_widths[2]]
+                };
+                for (i, w) in right_w.iter_mut().enumerate() {
+                    *w = w.clamp(right_mins[i], right_maxs[i]);
+                }
+                let min_name = 110.0_f32;
+                let right_sum: f32 = right_w.iter().sum();
+                if right_sum > total_cols_w - min_name {
+                    let excess = right_sum - (total_cols_w - min_name);
+                    let shrinkable: f32 = right_w
+                        .iter()
+                        .zip(right_mins)
+                        .map(|(w, m)| (*w - *m).max(0.0))
+                        .sum();
+                    if shrinkable > 0.5 {
+                        let factor = (excess / shrinkable).min(1.0);
+                        for (w, &m) in right_w.iter_mut().zip(right_mins) {
+                            *w -= (*w - m) * factor;
+                        }
+                    }
+                }
+                let w_name = (total_cols_w - right_w.iter().sum::<f32>()).max(min_name);
+                let mut widths = Vec::with_capacity(cols_count);
+                widths.push(w_name);
+                widths.extend_from_slice(&right_w);
+
                 let table = TableBuilder::new(ui).striped(false);
                 let table = if let Some(row) = scroll {
                     table.scroll_to_row(row, Some(Align::Center))
@@ -1437,21 +1488,12 @@ impl Browser {
                 };
                 let mut table = table
                     .striped(false)
-                    .resizable(true)
+                    .resizable(false)
                     .cell_layout(egui::Layout::left_to_right(Align::Center))
-                    .sense(Sense::click())
-                    .column(Column::remainder().at_least(150.0).clip(true).resizable(false));
-                if multi {
-                    table = table.column(Column::initial(112.0).at_least(76.0).clip(true));
+                    .sense(Sense::click());
+                for &w in &widths {
+                    table = table.column(Column::exact(w).clip(true).resizable(false));
                 }
-                table = table
-                    .column(Column::initial(54.0).at_least(44.0).clip(true))
-                    .column(
-                        Column::initial(84.0)
-                            .at_least(68.0)
-                            .clip(true)
-                            .resizable(false),
-                    );
 
                 let mut cols: Vec<(&str, usize)> = vec![("Имя", 0)];
                 if multi {
@@ -1679,6 +1721,96 @@ impl Browser {
                             }
                         });
                     });
+                let table_bottom = ui.min_rect().bottom().min(ui.clip_rect().bottom());
+                let mut sep_x = table_left - spacing_x * 0.5;
+                for k in 0..cols_count - 1 {
+                    sep_x += widths[k] + spacing_x;
+                    let hit_rect = egui::Rect::from_min_max(
+                        egui::pos2(sep_x - 4.0, table_top),
+                        egui::pos2(sep_x + 4.0, table_bottom),
+                    );
+                    let sep_id = ui.id().with(("col_sep", cols_count, k));
+                    let resp = ui.interact(hit_rect, sep_id, egui::Sense::click_and_drag());
+                    if resp.double_clicked() {
+                        self.col_widths = [108.0, 56.0, 84.0];
+                    } else if resp.dragged()
+                        && let Some(ptr) = ctx.pointer_latest_pos()
+                    {
+                        let dx = ptr.x - sep_x;
+                        let right_offset = if multi { 0 } else { 1 };
+                        if dx > 0.5 {
+                            // Движение вправо: левая сторона расширяется, правая сужается
+                            let max_give = if k == 0 {
+                                (widths[0] + right_w.iter().sum::<f32>() - min_name).max(0.0)
+                            } else {
+                                (right_maxs[k - 1] - right_w[k - 1]).max(0.0)
+                            };
+                            let mut rem = dx.min(max_give);
+                            let mut taken = 0.0_f32;
+                            for r in k..right_w.len() {
+                                if rem <= 0.0 {
+                                    break;
+                                }
+                                let can_take = (right_w[r] - right_mins[r]).max(0.0);
+                                let d = rem.min(can_take);
+                                right_w[r] -= d;
+                                rem -= d;
+                                taken += d;
+                            }
+                            if k > 0 && taken > 0.0 {
+                                // При уменьшении крайней правой колонки возвращаем ширину в "Имя",
+                                // если левая колонка уже >= своего стандарта.
+                                if k == right_w.len() - 1 && right_w[k - 1] >= right_defs[k - 1] {
+                                    // width[0] вырастет автоматически, потому что right_w стал меньше
+                                } else {
+                                    right_w[k - 1] += taken;
+                                }
+                            }
+                        } else if dx < -0.5 {
+                            // Движение влево: расширяем колонку справа от границы (за счёт Имя или левой колонки)
+                            let mut need = (-dx).min((right_maxs[k] - right_w[k]).max(0.0));
+                            let mut name_avail = (widths[0] - min_name).max(0.0);
+                            if k == 0 {
+                                let d = need.min(name_avail);
+                                right_w[0] += d;
+                            } else {
+                                let d_name = need.min(name_avail);
+                                right_w[k] += d_name;
+                                need -= d_name;
+                                name_avail -= d_name;
+                                let _ = name_avail;
+                                if need > 0.0 {
+                                    let d_left = need.min((right_w[k - 1] - right_mins[k - 1]).max(0.0));
+                                    right_w[k - 1] -= d_left;
+                                    right_w[k] += d_left;
+                                }
+                            }
+                        }
+                        for (i, w) in right_w.iter().enumerate() {
+                            self.col_widths[right_offset + i] = *w;
+                        }
+                    }
+                    let hovering = resp.hovered() || resp.dragged();
+                    if hovering {
+                        ctx.set_cursor_icon(egui::CursorIcon::ResizeColumn);
+                    }
+                    let line_color = if resp.dragged() {
+                        theme::ACCENT
+                    } else if hovering {
+                        theme::BORDER_HOVER
+                    } else {
+                        theme::BORDER_LINE
+                    };
+                    let y_end = if hovering {
+                        table_bottom
+                    } else {
+                        (table_top + theme::HEADER_H).min(table_bottom)
+                    };
+                    ui.painter().line_segment(
+                        [egui::pos2(sep_x, table_top), egui::pos2(sep_x, y_end)],
+                        Stroke::new(1.0_f32, line_color),
+                    );
+                }
             });
         let rows = rendered_rows;
         let selectable_indices: Vec<usize> = rows
@@ -1754,14 +1886,49 @@ impl Browser {
                     ui.weak("Архиватор и инспектор ресурсов GTA San Andreas / MTA Province");
                     ui.separator();
                     ui.strong("Навигация и архивы");
-                    ui.label("Ctrl+O — открыть один или несколько IMG\nCtrl+S — сохранить правки с резервной копией\nCtrl+F — фокус на поиск ресурса (Esc — очистить)\nCtrl+E — извлечь выделенные файлы\nInsert — добавить файлы в архив\nDelete — пометить удаление / удалить текстуру в TXD\nF3 / 2×клик — просмотр ресурса\nAlt+Up — подняться на папку вверх");
+                    ui.label("Ctrl+O — открыть один или несколько IMG / TXD\nCtrl+S — сохранить правки с резервной копией\nCtrl+F — фокус на поиск ресурса (Esc — очистить)\nCtrl+E — извлечь выделенные файлы\nInsert — добавить файлы в архив\nDelete — пометить удаление / удалить текстуру в TXD\nF3 / 2×клик — просмотр ресурса\nAlt+Up — подняться на папку вверх");
                     ui.add_space(6.0);
                     ui.strong("3D-вьюпорт (DFF) и TXD-редактор");
                     ui.label("ЛКМ — вращение модели (или сдвиг текстуры)\nПКМ / СКМ / Shift+ЛКМ — панорамирование 3D-сцены\nКолесо мыши — плавный масштаб\nR / 2×клик — сброс камеры (3D) или 1:1 / Вписать (TXD)\nCtrl+Z / Ctrl+Y — отмена и повтор правок текстур TXD");
                     ui.separator();
                     ui.weak("Совет: перетащите .img файлы в окно для открытия, или .png/.dds картинки прямо в открытый TXD для замены/добавления текстур.");
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.weak("Ссылки:");
+                        ui.hyperlink_to("GitHub", "https://github.com/Vaemoon/OpenProvince");
+                    });
                 });
             self.help_open = open;
+        }
+        if self.about_open {
+            let mut open = self.about_open;
+            egui::Window::new("О программе")
+                .open(&mut open)
+                .resizable(false)
+                .default_width(400.0)
+                .show(ctx, |ui| {
+                    ui.label(egui::RichText::new("OpenProvince").size(18.0).strong());
+                    ui.label(
+                        egui::RichText::new(format!("Версия {}", env!("CARGO_PKG_VERSION")))
+                            .size(12.0)
+                            .color(theme::TEXT_SECONDARY),
+                    );
+                    ui.add_space(4.0);
+                    ui.label("Инструмент для работы с архивами IMG, 3D-моделями DFF и текстурами TXD GTA San Andreas / MTA Province.");
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Сообщество и код:")
+                                .size(12.0)
+                                .color(theme::TEXT_SECONDARY),
+                        );
+                        ui.hyperlink_to("GitHub", "https://github.com/Vaemoon/OpenProvince")
+                            .on_hover_text("https://github.com/Vaemoon/OpenProvince");
+                    });
+                });
+            self.about_open = open;
         }
     }
     fn preview_ui(&mut self, ctx: &egui::Context) {
@@ -1803,27 +1970,48 @@ impl Browser {
                 let mut header_archive_idx = None;
                 let mut chosen_variant = self.variant_selected;
                 if let Some((path, name, dirty)) = standalone {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        ui.label(egui::RichText::new(&name).size(14.0).strong());
-                        if dirty {
-                            ui.label(
-                                egui::RichText::new("изменён")
-                                    .size(11.5)
-                                    .color(theme::STATUS_MODIFIED),
-                            );
-                        }
-                        let parent_hint = path
-                            .parent()
-                            .and_then(|p| p.file_name())
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "Внешний TXD".into());
-                        ui.label(
-                            egui::RichText::new(format!("· {parent_hint}"))
-                                .size(12.0)
-                                .color(theme::TEXT_SECONDARY),
-                        )
-                        .on_hover_text(path.display().to_string());
+                    let parent_hint = path
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "Внешний TXD".into());
+                    let seg_w = 148.0;
+                    let save_w = if dirty { 104.0 } else { 0.0 };
+                    let close_w = theme::CONTROL_H + 6.0;
+                    let right_w = seg_w + save_w + close_w + if dirty { 14.0 } else { 0.0 };
+                    let left_w = (ui.available_width() - right_w - 8.0).max(80.0);
+                    ui.horizontal(|ui| {
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(left_w, theme::CONTROL_H),
+                            egui::Layout::left_to_right(Align::Center),
+                            |ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                file_icon(ui, false, "TXD");
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&name).size(14.0).strong(),
+                                    )
+                                    .truncate(),
+                                )
+                                .on_hover_text(path.display().to_string());
+                                if dirty {
+                                    ui.label(
+                                        egui::RichText::new("изменён")
+                                            .size(11.5)
+                                            .color(theme::STATUS_MODIFIED),
+                                    );
+                                }
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(format!("· {parent_hint}"))
+                                            .size(12.0)
+                                            .color(theme::TEXT_SECONDARY),
+                                    )
+                                    .truncate(),
+                                )
+                                .on_hover_text(path.display().to_string());
+                            },
+                        );
                         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                             if theme::icon_button(
                                 ui,
@@ -1835,11 +2023,12 @@ impl Browser {
                             {
                                 close_standalone = true;
                             }
-                            if theme::tab_toggle(ui, self.show_details, "Сведения").clicked() {
-                                self.show_details = true;
-                            }
-                            if theme::tab_toggle(ui, !self.show_details, "Просмотр").clicked() {
-                                self.show_details = false;
+                            if let Some(tab) = theme::segmented_toggle(
+                                ui,
+                                &["Просмотр", "Сведения"],
+                                usize::from(self.show_details),
+                            ) {
+                                self.show_details = tab == 1;
                             }
                             if dirty {
                                 ui.separator();
@@ -1863,37 +2052,76 @@ impl Browser {
                 } else if let Some((sel, entry_name, entry_size, arch_label)) = selected_entry {
                     header_archive_idx = Some(sel.archive);
                     let edit_tag = self.pending_edit_tag(sel.archive, &entry_name);
+                    let kind = entry_name
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or_default()
+                        .to_ascii_uppercase();
+                    let meta_full = format!(
+                        "{arch_label} · {}",
+                        theme::format_size(entry_size)
+                    );
+                    let seg_w = 148.0;
+                    let paired_w = paired.as_ref().map_or(0.0, |(_, paired_name)| {
+                        let text_w = ui
+                            .painter()
+                            .layout_no_wrap(
+                                paired_name.clone(),
+                                egui::FontId::proportional(12.5),
+                                theme::TEXT_PRIMARY,
+                            )
+                            .size()
+                            .x;
+                        text_w + 38.0
+                    });
+                    let right_w = seg_w + paired_w + 8.0;
+                    let left_w = (ui.available_width() - right_w - 8.0).max(80.0);
 
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        ui.label(egui::RichText::new(&entry_name).size(14.0).strong());
-                        if let Some((tag, color)) = edit_tag {
-                            let text = if tag == "ЗАМ" { "изменён" } else { "удаляется" };
-                            ui.label(egui::RichText::new(text).size(11.5).color(color));
-                        }
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "· {} · {}",
-                                arch_label,
-                                theme::format_size(entry_size)
-                            ))
-                            .size(12.0)
-                            .color(theme::TEXT_SECONDARY),
+                    ui.horizontal(|ui| {
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(left_w, theme::CONTROL_H),
+                            egui::Layout::left_to_right(Align::Center),
+                            |ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                file_icon(ui, false, &kind);
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&entry_name).size(14.0).strong(),
+                                    )
+                                    .truncate(),
+                                )
+                                .on_hover_text(&entry_name);
+                                if let Some((tag, color)) = edit_tag {
+                                    let text =
+                                        if tag == "ЗАМ" { "изменён" } else { "удаляется" };
+                                    ui.label(egui::RichText::new(text).size(11.5).color(color));
+                                }
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(format!("· {meta_full}"))
+                                            .size(12.0)
+                                            .color(theme::TEXT_SECONDARY),
+                                    )
+                                    .truncate(),
+                                )
+                                .on_hover_text(&meta_full);
+                            },
                         );
                         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                            if theme::tab_toggle(ui, self.show_details, "Сведения").clicked() {
-                                self.show_details = true;
-                            }
-                            if theme::tab_toggle(ui, !self.show_details, "Просмотр").clicked() {
-                                self.show_details = false;
+                            if let Some(tab) = theme::segmented_toggle(
+                                ui,
+                                &["Просмотр", "Сведения"],
+                                usize::from(self.show_details),
+                            ) {
+                                self.show_details = tab == 1;
                             }
                             if let Some((paired_target, paired_name)) = &paired {
                                 ui.separator();
                                 if theme::tool_button(
                                     ui,
                                     theme::Icon::ScanEye,
-                                    &format!("Открыть {paired_name}"),
-                                    "Перейти к парному ресурсу",
+                                    paired_name,
+                                    &format!("Перейти к парному ресурсу {paired_name}"),
                                     !self.busy,
                                 )
                                 .clicked()
@@ -1961,163 +2189,6 @@ impl Browser {
                 }
                 let _ = header_archive_idx;
 
-                if !self.show_details && self.model.is_some() {
-                    if !self.remap_targets.is_empty() {
-                        self.ensure_vinyls();
-                    }
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        theme::panel_menu(
-                            ui,
-                            format!("Текстуры ({})", self.images.len()),
-                            |ui| {
-                                if ui
-                                    .button("Подключить внешний .txd…")
-                                    .on_hover_text("Наложить словарь для предпросмотра")
-                                    .clicked()
-                                {
-                                    self.load_txd(ctx);
-                                    ui.close_menu();
-                                }
-                                ui.separator();
-                                egui::ScrollArea::vertical()
-                                    .max_height(240.0)
-                                    .show(ui, |ui| {
-                                        for (name, handle) in &self.images {
-                                            ui.label(format!(
-                                                "{}   {} × {}",
-                                                name,
-                                                handle.size()[0],
-                                                handle.size()[1]
-                                            ));
-                                        }
-                                    });
-                            },
-                        );
-
-                        if !self.variants.is_empty() {
-                            let prefix = if self.player_skin_mode {
-                                "Вариант"
-                            } else {
-                                "Окраска"
-                            };
-                            let current = if chosen_variant == 0 {
-                                "Основная"
-                            } else {
-                                &self.variants[chosen_variant - 1].name
-                            };
-                            theme::panel_menu(ui, format!("{prefix}: {current}"), |ui| {
-                                variant_options(ui, &self.variants, &mut chosen_variant);
-                            });
-                        }
-
-                        if !self.remap_targets.is_empty() {
-                            let vinyl_name = self
-                                .vinyl_selected
-                                .and_then(|i| self.vinyls.get(i))
-                                .map_or("Нет", |v| v.name.as_str());
-                            let mut pick_vinyl: Option<Option<usize>> = None;
-                            let mut pick_dir = false;
-                            theme::panel_menu(ui, format!("Винил: {vinyl_name}"), |ui| {
-                                ui.set_min_width(240.0);
-                                ui.horizontal(|ui| {
-                                    ui.add_sized(
-                                        [180.0, theme::CONTROL_H],
-                                        egui::TextEdit::singleline(&mut self.vinyl_filter)
-                                            .id_salt("vinyl_search")
-                                            .hint_text("Найти винил…"),
-                                    );
-                                    if theme::icon_button(
-                                        ui,
-                                        theme::Icon::Close,
-                                        "Очистить",
-                                        !self.vinyl_filter.is_empty(),
-                                    )
-                                    .clicked()
-                                    {
-                                        self.vinyl_filter.clear();
-                                    }
-                                });
-                                ui.separator();
-                                if ui
-                                    .selectable_label(self.vinyl_selected.is_none(), "Без винила")
-                                    .clicked()
-                                {
-                                    pick_vinyl = Some(None);
-                                    ui.close_menu();
-                                }
-                                let query = self.vinyl_filter.to_lowercase();
-                                let filtered: Vec<(usize, String)> = self
-                                    .vinyls
-                                    .iter()
-                                    .enumerate()
-                                    .filter(|(_, v)| {
-                                        query.is_empty() || v.name.to_lowercase().contains(&query)
-                                    })
-                                    .map(|(i, v)| (i, v.name.clone()))
-                                    .collect();
-                                egui::ScrollArea::vertical()
-                                    .max_height(260.0)
-                                    .show(ui, |ui| {
-                                        if filtered.is_empty() {
-                                            ui.weak(if self.vinyls.is_empty() {
-                                                "Винилы не найдены в папке игры."
-                                            } else {
-                                                "Нет совпадений."
-                                            });
-                                        } else {
-                                            for (idx, name) in filtered {
-                                                if ui
-                                                    .selectable_label(
-                                                        self.vinyl_selected == Some(idx),
-                                                        &name,
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    pick_vinyl = Some(Some(idx));
-                                                    ui.close_menu();
-                                                }
-                                            }
-                                        }
-                                    });
-                                ui.separator();
-                                if ui
-                                    .button(format!(
-                                        "Папка винилов… ({})",
-                                        self.vinyls.len()
-                                    ))
-                                    .clicked()
-                                {
-                                    pick_dir = true;
-                                    ui.close_menu();
-                                }
-                            });
-                            if pick_dir
-                                && let Some(dir) = rfd::FileDialog::new()
-                                    .set_directory(&self.folder)
-                                    .pick_folder()
-                            {
-                                self.vinyl_dir = Some(dir);
-                                self.reload_vinyls();
-                            }
-                            if let Some(choice) = pick_vinyl {
-                                self.select_vinyl(choice, ctx);
-                            }
-                        }
-
-                        if self.player_skin_mode
-                            && ui
-                                .checkbox(&mut self.assemble_player_skin, "На скине CJ")
-                                .changed()
-                        {
-                            reload_skin = true;
-                        }
-                    });
-                    ui.add_space(4.0);
-                    theme::hline(ui);
-                    ui.add_space(4.0);
-                }
-
                 if self.show_details {
                     ui.horizontal(|ui| {
                         if ui
@@ -2144,18 +2215,177 @@ impl Browser {
                             || self.edits.is_empty()
                             || self.edited_archive == Some(editor.target.archive));
                     editor.show(ui, can_edit);
-                } else if let Some(model) = &mut self.model {
+                } else if self.model.is_some() {
+                    if !self.remap_targets.is_empty() {
+                        self.ensure_vinyls();
+                    }
                     let vinyl_handle = self.vinyl_texture.clone();
-                    if let Some(response) = model.show(
+                    let mut pick_vinyl: Option<Option<usize>> = None;
+                    let mut pick_dir = false;
+                    let mut load_external_txd = false;
+                    let images = &self.images;
+                    let variants = &self.variants;
+                    let remap_targets = &self.remap_targets;
+                    let vinyls = &self.vinyls;
+                    let vinyl_selected = self.vinyl_selected;
+                    let vinyl_filter = &mut self.vinyl_filter;
+                    let player_skin_mode = self.player_skin_mode;
+                    let assemble_player_skin = &mut self.assemble_player_skin;
+                    let variant_selected = self.variant_selected;
+                    let model = self.model.as_mut().expect("checked");
+
+                    let response = model.show(
                         ui,
-                        &self.images,
-                        self.variant_selected != 0,
+                        images,
+                        variant_selected != 0,
                         vinyl_handle.as_ref(),
-                    ) {
+                        |ui| {
+                            theme::panel_menu(ui, format!("Текстуры ({})", images.len()), |ui| {
+                                if ui
+                                    .button("Подключить внешний .txd…")
+                                    .on_hover_text("Наложить словарь для предпросмотра")
+                                    .clicked()
+                                {
+                                    load_external_txd = true;
+                                    ui.close_menu();
+                                }
+                                ui.separator();
+                                egui::ScrollArea::vertical()
+                                    .max_height(240.0)
+                                    .show(ui, |ui| {
+                                        for (name, handle) in images {
+                                            ui.label(format!(
+                                                "{}   {} × {}",
+                                                name,
+                                                handle.size()[0],
+                                                handle.size()[1]
+                                            ));
+                                        }
+                                    });
+                            });
+
+                            if !variants.is_empty() {
+                                let prefix = if player_skin_mode {
+                                    "Вариант"
+                                } else {
+                                    "Окраска"
+                                };
+                                let current = if chosen_variant == 0 {
+                                    "Основная"
+                                } else {
+                                    &variants[chosen_variant - 1].name
+                                };
+                                theme::panel_menu(ui, format!("{prefix}: {current}"), |ui| {
+                                    variant_options(ui, variants, &mut chosen_variant);
+                                });
+                            }
+
+                            if !remap_targets.is_empty() {
+                                let vinyl_name = vinyl_selected
+                                    .and_then(|i| vinyls.get(i))
+                                    .map_or("Нет", |v| v.name.as_str());
+                                theme::panel_menu(ui, format!("Винил: {vinyl_name}"), |ui| {
+                                    ui.set_min_width(240.0);
+                                    ui.horizontal(|ui| {
+                                        ui.add_sized(
+                                            [180.0, theme::CONTROL_H],
+                                            egui::TextEdit::singleline(vinyl_filter)
+                                                .id_salt("vinyl_search")
+                                                .hint_text("Найти винил…"),
+                                        );
+                                        if theme::icon_button(
+                                            ui,
+                                            theme::Icon::Close,
+                                            "Очистить",
+                                            !vinyl_filter.is_empty(),
+                                        )
+                                        .clicked()
+                                        {
+                                            vinyl_filter.clear();
+                                        }
+                                    });
+                                    ui.separator();
+                                    if ui
+                                        .selectable_label(vinyl_selected.is_none(), "Без винила")
+                                        .clicked()
+                                    {
+                                        pick_vinyl = Some(None);
+                                        ui.close_menu();
+                                    }
+                                    let query = vinyl_filter.to_lowercase();
+                                    let filtered: Vec<(usize, String)> = vinyls
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(_, v)| {
+                                            query.is_empty()
+                                                || v.name.to_lowercase().contains(&query)
+                                        })
+                                        .map(|(i, v)| (i, v.name.clone()))
+                                        .collect();
+                                    egui::ScrollArea::vertical()
+                                        .max_height(260.0)
+                                        .show(ui, |ui| {
+                                            if filtered.is_empty() {
+                                                ui.weak(if vinyls.is_empty() {
+                                                    "Винилы не найдены в папке игры."
+                                                } else {
+                                                    "Нет совпадений."
+                                                });
+                                            } else {
+                                                for (idx, name) in filtered {
+                                                    if ui
+                                                        .selectable_label(
+                                                            vinyl_selected == Some(idx),
+                                                            &name,
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        pick_vinyl = Some(Some(idx));
+                                                        ui.close_menu();
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    ui.separator();
+                                    if ui
+                                        .button(format!("Папка винилов… ({})", vinyls.len()))
+                                        .clicked()
+                                    {
+                                        pick_dir = true;
+                                        ui.close_menu();
+                                    }
+                                });
+                            }
+
+                            if player_skin_mode
+                                && ui
+                                    .checkbox(assemble_player_skin, "На скине CJ")
+                                    .changed()
+                            {
+                                reload_skin = true;
+                            }
+                            ui.separator();
+                        },
+                    );
+                    if let Some(response) = response {
                         response.context_menu(|ui| {
                             ui.strong("Варианты текстур");
                             variant_options(ui, &self.variants, &mut chosen_variant);
                         });
+                    }
+                    if load_external_txd {
+                        self.load_txd(ctx);
+                    }
+                    if pick_dir
+                        && let Some(dir) = rfd::FileDialog::new()
+                            .set_directory(&self.folder)
+                            .pick_folder()
+                    {
+                        self.vinyl_dir = Some(dir);
+                        self.reload_vinyls();
+                    }
+                    if let Some(choice) = pick_vinyl {
+                        self.select_vinyl(choice, ctx);
                     }
                 } else if !self.images.is_empty() {
                     egui::ScrollArea::both().show(ui, |ui| {

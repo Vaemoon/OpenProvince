@@ -250,6 +250,50 @@ pub fn bordered_button(ui: &mut egui::Ui, label: &str, min_size: Vec2) -> egui::
     .inner
 }
 
+pub fn segmented_toggle(ui: &mut egui::Ui, labels: &[&str], active: usize) -> Option<usize> {
+    let mut clicked = None;
+    egui::Frame::new()
+        .fill(BG_INPUT)
+        .stroke(Stroke::new(1.0_f32, BORDER_LINE))
+        .corner_radius(3.0)
+        .inner_margin(Margin::same(2))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (idx, &label) in labels.iter().enumerate() {
+                    let selected = idx == active;
+                    let resp = ui
+                        .scope(|ui| {
+                            let hovered = &mut ui.style_mut().visuals.widgets.hovered;
+                            hovered.weak_bg_fill = BG_ELEVATED;
+                            hovered.bg_stroke = Stroke::NONE;
+                            let inactive = &mut ui.style_mut().visuals.widgets.inactive;
+                            if selected {
+                                inactive.weak_bg_fill = BG_ELEVATED;
+                                inactive.bg_stroke = Stroke::new(1.0_f32, BORDER_INPUT);
+                                inactive.fg_stroke = Stroke::new(1.0_f32, TEXT_PRIMARY);
+                            } else {
+                                inactive.weak_bg_fill = Color32::TRANSPARENT;
+                                inactive.bg_stroke = Stroke::NONE;
+                                inactive.fg_stroke = Stroke::new(1.0_f32, TEXT_SECONDARY);
+                            }
+                            ui.style_mut().spacing.button_padding = egui::vec2(8.0, 2.0);
+                            ui.add(
+                                egui::Button::new(egui::RichText::new(label).size(12.0))
+                                    .corner_radius(2.0)
+                                    .min_size(Vec2::new(0.0, CONTROL_H - 4.0)),
+                            )
+                        })
+                        .inner;
+                    if resp.clicked() {
+                        clicked = Some(idx);
+                    }
+                }
+            });
+        });
+    clicked
+}
+
 pub fn tab_toggle(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::Response {
     ui.scope(|ui| {
         let hovered = &mut ui.style_mut().visuals.widgets.hovered;

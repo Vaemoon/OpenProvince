@@ -931,8 +931,10 @@ impl View {
         textures: &[(String, egui::TextureHandle)],
         paintjob: bool,
         vinyl: Option<&egui::TextureHandle>,
+        extra_controls: impl FnOnce(&mut egui::Ui),
     ) -> Option<egui::Response> {
-        self.renderer.show(ui, textures, paintjob, vinyl)
+        self.renderer
+            .show(ui, textures, paintjob, vinyl, extra_controls)
     }
 }
 

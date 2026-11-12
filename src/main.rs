@@ -50,6 +50,7 @@ struct Browser {
     address: String,
     preview_open: bool,
     help_open: bool,
+    about_open: bool,
     archives: Vec<Arc<Archive>>,
     active_archive: usize,
     edited_archive: Option<usize>,
@@ -85,6 +86,7 @@ struct Browser {
 
     sort: usize,
     descending: bool,
+    col_widths: [f32; 3],
     type_filter: u8,
     focus_search: bool,
     changes_open: bool,
@@ -110,6 +112,7 @@ impl Browser {
             address: String::new(),
             preview_open: true,
             help_open: false,
+            about_open: false,
             archives: Vec::new(),
             active_archive: 0,
             edited_archive: None,
@@ -145,6 +148,7 @@ impl Browser {
 
             sort: 0,
             descending: false,
+            col_widths: [108.0, 56.0, 84.0],
             type_filter: 0,
             focus_search: false,
             changes_open: false,

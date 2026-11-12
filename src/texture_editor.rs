@@ -536,7 +536,7 @@ impl Editor {
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete));
 
         ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.spacing_mut().item_spacing = Vec2::new(6.0, 5.0);
             if theme::tool_button(
                 ui,
                 theme::Icon::Plus,
@@ -575,10 +575,9 @@ impl Editor {
 
             ui.separator();
 
-            if theme::tool_button(
+            if theme::icon_button(
                 ui,
                 theme::Icon::Undo,
-                "Отменить",
                 "Отменить правку TXD (Ctrl+Z)",
                 editable && !self.undo.is_empty(),
             )
@@ -588,10 +587,9 @@ impl Editor {
                 self.pending_history = self.undo.last().cloned();
                 self.edit(&ctx, |_| Ok(()));
             }
-            if theme::tool_button(
+            if theme::icon_button(
                 ui,
                 theme::Icon::Redo,
-                "Повторить",
                 "Повторить правку TXD (Ctrl+Y)",
                 editable && !self.redo.is_empty(),
             )
@@ -660,30 +658,31 @@ impl Editor {
         }
         ui.add_space(6.0);
         let available = ui.available_size();
-                if available.x >= 560.0 {
-                    ui.horizontal_top(|ui| {
-                        ui.allocate_ui_with_layout(
-                            Vec2::new(236.0, available.y),
-                            egui::Layout::top_down(Align::Min),
-                            |ui| {
-                                self.texture_list(ui, &ctx, available.y, editable);
-                            },
-                        );
-                        ui.separator();
-                        let width = ui.available_width();
-                        ui.allocate_ui_with_layout(
-                            Vec2::new(width, available.y),
-                            egui::Layout::top_down(Align::Min),
-                            |ui| {
-                                self.viewer(ui, &ctx, editable, editable_texture);
-                            },
-                        );
-                    });
-                } else {
-                    self.texture_list(ui, &ctx, (available.y * 0.30).clamp(112.0, 190.0), editable);
-                    ui.add_space(6.0);
-                    self.viewer(ui, &ctx, editable, editable_texture);
-                }
+        if available.x >= 460.0 {
+            let list_w = (available.x * 0.34).clamp(184.0, 232.0);
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(
+                    Vec2::new(list_w, available.y),
+                    egui::Layout::top_down(Align::Min),
+                    |ui| {
+                        self.texture_list(ui, &ctx, available.y, editable);
+                    },
+                );
+                ui.separator();
+                let width = ui.available_width();
+                ui.allocate_ui_with_layout(
+                    Vec2::new(width, available.y),
+                    egui::Layout::top_down(Align::Min),
+                    |ui| {
+                        self.viewer(ui, &ctx, editable, editable_texture);
+                    },
+                );
+            });
+        } else {
+            self.texture_list(ui, &ctx, (available.y * 0.30).clamp(112.0, 190.0), editable);
+            ui.add_space(6.0);
+            self.viewer(ui, &ctx, editable, editable_texture);
+        }
     }
     fn select_index(&mut self, index: usize) {
         if index != self.selected {
@@ -917,63 +916,85 @@ impl Editor {
                 )
             })
         {
+            let meta_text = format!("{w} × {h} · {fmt} · Mip: {mipmaps}");
+            let meta_galley = ui.painter().layout_no_wrap(
+                meta_text.clone(),
+                egui::FontId::proportional(12.0),
+                theme::TEXT_SECONDARY,
+            );
+            let total_w = ui.available_width();
+            let left_w = (total_w - meta_galley.size().x - 12.0).max(80.0);
             ui.horizontal(|ui| {
-                if self.renaming && editable {
-                    let response = ui.add_sized(
-                        [200.0, theme::CONTROL_H],
-                        egui::TextEdit::singleline(&mut self.rename).id_salt("txd_rename"),
-                    );
-                    if ui
-                        .add(
-                            egui::Button::new("OK")
-                                .frame(false)
-                                .min_size(Vec2::new(0.0, theme::CONTROL_H)),
-                        )
-                        .clicked()
-                        || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
-                    {
-                        let index = self.selected;
-                        let name = self.rename.clone();
-                        self.renaming = false;
-                        self.edit(ctx, move |d| d.rename(index, &name));
-                    }
-                    if ui
-                        .add(
-                            egui::Button::new("Отмена")
-                                .frame(false)
-                                .min_size(Vec2::new(0.0, theme::CONTROL_H)),
-                        )
-                        .clicked()
-                        || ui.input(|i| i.key_pressed(egui::Key::Escape))
-                    {
-                        self.rename = entry_name.clone();
-                        self.renaming = false;
-                    }
-                } else {
-                    ui.label(egui::RichText::new(&entry_name).size(13.5).strong());
-                    if editable
-                        && theme::icon_button(
-                            ui,
-                            theme::Icon::Pencil,
-                            "Переименовать текстуру",
-                            true,
-                        )
-                        .clicked()
-                    {
-                        self.rename = entry_name.clone();
-                        self.renaming = true;
-                    }
-                    if !supported {
-                        ui.label(
-                            egui::RichText::new("только чтение")
-                                .size(11.5)
-                                .color(theme::STATUS_MODIFIED),
-                        );
-                    }
-                }
+                ui.allocate_ui_with_layout(
+                    Vec2::new(left_w, theme::CONTROL_H),
+                    egui::Layout::left_to_right(Align::Center),
+                    |ui| {
+                        if self.renaming && editable {
+                            let response = ui.add_sized(
+                                [(left_w - 92.0).max(60.0), theme::CONTROL_H],
+                                egui::TextEdit::singleline(&mut self.rename)
+                                    .id_salt("txd_rename"),
+                            );
+                            if ui
+                                .add(
+                                    egui::Button::new("OK")
+                                        .frame(false)
+                                        .min_size(Vec2::new(0.0, theme::CONTROL_H)),
+                                )
+                                .clicked()
+                                || (response.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                            {
+                                let index = self.selected;
+                                let name = self.rename.clone();
+                                self.renaming = false;
+                                self.edit(ctx, move |d| d.rename(index, &name));
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new("Отмена")
+                                        .frame(false)
+                                        .min_size(Vec2::new(0.0, theme::CONTROL_H)),
+                                )
+                                .clicked()
+                                || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                            {
+                                self.rename = entry_name.clone();
+                                self.renaming = false;
+                            }
+                        } else {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&entry_name).size(13.5).strong(),
+                                )
+                                .truncate(),
+                            )
+                            .on_hover_text(&entry_name);
+                            if editable
+                                && theme::icon_button(
+                                    ui,
+                                    theme::Icon::Pencil,
+                                    "Переименовать текстуру",
+                                    true,
+                                )
+                                .clicked()
+                            {
+                                self.rename = entry_name.clone();
+                                self.renaming = true;
+                            }
+                            if !supported {
+                                ui.label(
+                                    egui::RichText::new("только чтение")
+                                        .size(11.5)
+                                        .color(theme::STATUS_MODIFIED),
+                                );
+                            }
+                        }
+                    },
+                );
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                     ui.label(
-                        egui::RichText::new(format!("{w} × {h} · {fmt} · Mip: {mipmaps}"))
+                        egui::RichText::new(meta_text)
                             .size(12.0)
                             .color(theme::TEXT_SECONDARY),
                     );
@@ -983,7 +1004,7 @@ impl Editor {
         }
 
         ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.spacing_mut().item_spacing = Vec2::new(6.0, 5.0);
             let previous = self.channel;
             let channel_label = match self.channel {
                 1 => "Канал: RGB",

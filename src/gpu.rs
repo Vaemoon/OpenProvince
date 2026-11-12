@@ -349,6 +349,7 @@ impl View {
         textures: &[(String, egui::TextureHandle)],
         paintjob: bool,
         vinyl: Option<&egui::TextureHandle>,
+        extra_controls: impl FnOnce(&mut egui::Ui),
     ) -> Option<egui::Response> {
         let active_components = self
             .settings
@@ -365,7 +366,8 @@ impl View {
         });
 
         ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.spacing_mut().item_spacing = Vec2::new(6.0, 5.0);
+            extra_controls(ui);
             theme::panel_menu(ui, "Отображение", |ui| {
                 ui.checkbox(&mut self.settings.textured, "Текстуры");
                 ui.checkbox(&mut self.settings.wire, "Каркас");
