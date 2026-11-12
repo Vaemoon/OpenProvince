@@ -654,8 +654,8 @@ impl Browser {
             )
             .show(ctx, |ui| {
                 egui::menu::bar(ui, |ui| {
-                    ui.spacing_mut().item_spacing.x = 12.0;
-                    ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    ui.spacing_mut().button_padding = egui::vec2(6.0, 3.0);
                     ui.menu_button("Файл", |ui| {
                         menu(
                             ui,
@@ -1901,7 +1901,6 @@ impl Browser {
         let paired = selected_entry
             .as_ref()
             .and_then(|(sel, ..)| self.find_paired_asset(*sel));
-        let mut reload_skin = false;
         let mut jump_to = None;
         let mut trigger_save = false;
         let mut close_standalone = false;
@@ -2165,7 +2164,6 @@ impl Browser {
                     let vinyl_selected = self.vinyl_selected;
                     let vinyl_filter = &mut self.vinyl_filter;
                     let player_skin_mode = self.player_skin_mode;
-                    let assemble_player_skin = &mut self.assemble_player_skin;
                     let variant_selected = self.variant_selected;
                     let model = self.model.as_mut().expect("checked");
 
@@ -2292,13 +2290,6 @@ impl Browser {
                                 });
                             }
 
-                            if player_skin_mode
-                                && ui
-                                    .checkbox(assemble_player_skin, "На скине CJ")
-                                    .changed()
-                            {
-                                reload_skin = true;
-                            }
                             ui.separator();
                         },
                     );
@@ -2361,8 +2352,6 @@ impl Browser {
             self.selection.insert(target);
             self.scroll_selection = true;
             self.select(target, ctx);
-        } else if reload_skin {
-            self.reload_player_preview(ctx);
         }
     }
 }

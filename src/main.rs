@@ -77,7 +77,6 @@ struct Browser {
     model_error: String,
     txd_editor: Option<texture_editor::Editor>,
     player_skin_mode: bool,
-    assemble_player_skin: bool,
     show_details: bool,
     generation: usize,
     preview_epoch: Arc<std::sync::atomic::AtomicUsize>,
@@ -109,7 +108,7 @@ impl Browser {
     fn new() -> Self {
         let (sender, receiver) = mpsc::channel();
         Self {
-            folder: std::env::current_dir().unwrap_or_default(),
+            folder: initial_folder(),
             folder_files: Vec::new(),
             address: String::new(),
             preview_open: true,
@@ -141,7 +140,6 @@ impl Browser {
             model_error: String::new(),
             txd_editor: None,
             player_skin_mode: false,
-            assemble_player_skin: false,
             show_details: false,
             generation: 0,
             preview_epoch: Default::default(),
@@ -222,12 +220,6 @@ impl Browser {
         self.load_entry(target, 0, true, ctx);
     }
 
-    pub(crate) fn reload_player_preview(&mut self, ctx: &egui::Context) {
-        if let Some(target) = self.selected {
-            self.load_entry(target, self.variant_selected, false, ctx);
-        }
-    }
-
     fn load_entry(
         &mut self,
         target: EntryRef,
@@ -275,7 +267,6 @@ impl Browser {
         let epoch = self.preview_epoch.clone();
         let lock = self.preview_lock.clone();
         let opened = self.archives.clone();
-        let assemble = self.assemble_player_skin;
         let chosen_variant_txd = if variant_index == 0 {
             None
         } else {
@@ -324,7 +315,7 @@ impl Browser {
                     &archive,
                     target.index,
                     &opened,
-                    assemble,
+                    false,
                     chosen_variant_txd.as_deref(),
                 ) {
                     Ok((model, textures)) => {
@@ -1003,12 +994,11 @@ impl eframe::App for Browser {
                     self.busy = false;
                     match result {
                         Ok(new_archives) => {
-                            if let Some(first) = new_archives.first() {
-                                self.folder = first
-                                    .path()
-                                    .parent()
-                                    .unwrap_or(std::path::Path::new("."))
-                                    .to_owned();
+                            if let Some(first) = new_archives.first()
+                                && let Some(parent) = first.path().parent()
+                            {
+                                self.folder = parent.to_path_buf();
+                                remember_folder(&self.folder);
                             }
                             if !append {
                                 self.archives.clear();
@@ -1114,6 +1104,12 @@ impl eframe::App for Browser {
                                 .unwrap_or("texture.txd")
                                 .to_owned();
                             let count = document.len();
+                            if let Some(parent) = path.parent()
+                                && parent.is_dir()
+                            {
+                                self.folder = parent.to_path_buf();
+                                remember_folder(&self.folder);
+                            }
                             self.standalone_txd = Some(path.clone());
                             self.model = None;
                             self.model_error.clear();
@@ -1141,6 +1137,7 @@ impl eframe::App for Browser {
                     match result {
                         Ok((path, files)) => {
                             self.folder = path;
+                            remember_folder(&self.folder);
                             self.address = self.folder.display().to_string();
                             self.folder_files = files;
                             self.row_cache = None;
@@ -1216,6 +1213,81 @@ impl eframe::App for Browser {
             } else if let Some(txd) = txds.into_iter().next() {
                 self.open_txd_file(txd, ctx);
             }
+        }
+    }
+}
+
+#[cfg(not(test))]
+fn last_dir_state_path() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .map(|d| PathBuf::from(d).join("OpenProvince").join("last_dir.txt"))
+}
+
+fn default_models_candidates() -> Vec<PathBuf> {
+    let mut candidates = vec![
+        PathBuf::from(r"C:\Province Games\bin\models"),
+        PathBuf::from(r"D:\Province Games\bin\models"),
+        PathBuf::from(r"C:\Program Files (x86)\Province Games\bin\models"),
+        PathBuf::from(r"C:\Games\Province Games\bin\models"),
+        PathBuf::from(r"C:\Province Games Offline\game\models"),
+        PathBuf::from(r"Z:\Province Offline\game\models"),
+    ];
+    for drive in b'C'..=b'Z' {
+        let letter = char::from(drive);
+        candidates.push(PathBuf::from(format!(r"{letter}:\Province Games\bin\models")));
+        candidates.push(PathBuf::from(format!(r"{letter}:\Province\bin\models")));
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        candidates.push(dir.join("models"));
+        candidates.push(dir.join("bin").join("models"));
+        candidates.push(dir.join("game").join("models"));
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("models"));
+        candidates.push(cwd.join("bin").join("models"));
+        candidates.push(cwd.join("game").join("models"));
+    }
+    candidates
+}
+
+fn pick_first_existing_dir(candidates: &[PathBuf]) -> Option<PathBuf> {
+    candidates.iter().find(|p| p.is_dir()).cloned()
+}
+
+fn initial_folder() -> PathBuf {
+    #[cfg(not(test))]
+    if let Some(state_path) = last_dir_state_path()
+        && let Ok(saved) = std::fs::read_to_string(state_path)
+    {
+        let path = PathBuf::from(saved.trim());
+        if path.is_dir() {
+            return path;
+        }
+    }
+    pick_first_existing_dir(&default_models_candidates())
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_default()
+}
+
+fn remember_folder(path: &std::path::Path) {
+    #[cfg(test)]
+    let _ = path;
+    #[cfg(not(test))]
+    {
+        if !path.is_dir() {
+            return;
+        }
+        let tmp = std::env::temp_dir();
+        if path.starts_with(&tmp) {
+            return;
+        }
+        if let Some(state_path) = last_dir_state_path() {
+            if let Some(parent) = state_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(state_path, path.to_string_lossy().as_bytes());
         }
     }
 }
