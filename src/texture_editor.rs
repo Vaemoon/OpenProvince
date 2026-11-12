@@ -457,7 +457,6 @@ impl Editor {
                     let texture = document
                         .preview(i)
                         .ok_or_else(|| format!("Не поддерживается: {}", entries[i].name))?;
-                    // Never turn a native texture name into an unchecked filesystem path.
                     let destination = if all {
                         path.join(format!(
                             "{i:03}-{}.png",

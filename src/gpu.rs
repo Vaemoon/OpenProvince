@@ -1,5 +1,8 @@
 //! OpenGL-рендер DFF с буфером глубины и двумя проходами прозрачности.
-use crate::{dff::Model, theme};
+use crate::{
+    dff::{Model, is_remap_texture},
+    theme,
+};
 use eframe::{
     egui::{self, Color32, Stroke, Vec2},
     glow::{self, HasContext},
@@ -13,13 +16,14 @@ layout(location=2) in vec2 uv;
 layout(location=3) in vec4 color;
 uniform vec4 camera;
 uniform vec2 pan;
+uniform mat4 partMatrix;
 out vec2 texcoord; out vec3 lightingNormal; out vec4 vertexColor;
 void main(){
  float cy=cos(camera.x),sy=sin(camera.x),cp=cos(camera.y),sp=sin(camera.y);
  mat3 r=mat3(cy,-sy*sp,sy*cp, -sy,-cy*sp,cy*cp, 0,cp,sp);
- vec3 p=r*position; float depth=3.2+p.z;
+ vec3 p=r*(partMatrix*vec4(position,1.0)).xyz; float depth=3.2+p.z;
  gl_Position=vec4(p.x*camera.z/camera.w+pan.x*depth,p.y*camera.z+pan.y*depth,1.01005025*depth-0.201005,depth);
- texcoord=uv;lightingNormal=r*normal;vertexColor=color;
+ texcoord=uv;lightingNormal=r*(mat3(partMatrix)*normal);vertexColor=color;
 }"#;
 const FRAGMENT: &str = r#"#version 330 core
 in vec2 texcoord;in vec3 lightingNormal;in vec4 vertexColor;
@@ -27,7 +31,7 @@ uniform sampler2D image;uniform int textured;uniform int vinylOverlay;uniform ve
 out vec4 outputColor;
 void main(){
  vec4 t=textured!=0?texture(image,texcoord):vec4(1);
- // egui owns premultiplied texture uploads; recover straight RGB for 3D blending.
+ // egui хранит текстуры с premultiplied alpha; восстанавливаем прямой RGB для 3D-смешивания.
  if(textured!=0 && t.a>0.001)t.rgb/=t.a;
  vec4 c;
  if(vinylOverlay!=0 && textured!=0){
@@ -41,11 +45,41 @@ void main(){
  float diffuse=0.72+0.28*abs(dot(normalize(lightingNormal),normalize(vec3(-0.35,0.6,-0.75))));
  outputColor=vec4(c.rgb*diffuse,c.a);
 }"#;
+
 struct Range {
     start: i32,
     count: i32,
     material: usize,
     component: Option<usize>,
+    interactable: Option<usize>,
+}
+
+const IDENTITY_MAT4: [f32; 16] = [
+    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+];
+
+fn part_rotation_matrix(pivot: [f32; 3], axis: [f32; 3], angle: f32) -> [f32; 16] {
+    if angle.abs() < 1e-4 {
+        return IDENTITY_MAT4;
+    }
+    let (s, c) = angle.sin_cos();
+    let t = 1.0 - c;
+    let [ux, uy, uz] = axis;
+    let r00 = c + ux * ux * t;
+    let r01 = ux * uy * t - uz * s;
+    let r02 = ux * uz * t + uy * s;
+    let r10 = uy * ux * t + uz * s;
+    let r11 = c + uy * uy * t;
+    let r12 = uy * uz * t - ux * s;
+    let r20 = uz * ux * t - uy * s;
+    let r21 = uz * uy * t + ux * s;
+    let r22 = c + uz * uz * t;
+    let tx = pivot[0] - (r00 * pivot[0] + r01 * pivot[1] + r02 * pivot[2]);
+    let ty = pivot[1] - (r10 * pivot[0] + r11 * pivot[1] + r12 * pivot[2]);
+    let tz = pivot[2] - (r20 * pivot[0] + r21 * pivot[1] + r22 * pivot[2]);
+    [
+        r00, r10, r20, 0.0, r01, r11, r21, 0.0, r02, r12, r22, 0.0, tx, ty, tz, 1.0,
+    ]
 }
 struct Resources {
     gl: Arc<glow::Context>,
@@ -98,31 +132,38 @@ impl Resources {
             for idx in 0..model.components.len() {
                 component_slots.push(Some(idx));
             }
+            let mut interact_slots = vec![None];
+            for idx in 0..model.interactables.len() {
+                interact_slots.push(Some(idx));
+            }
             for &component in &component_slots {
-                for material in 0..model.materials.len() {
-                    let start = (vertices.len() / 12) as i32;
-                    for face in model
-                        .faces
-                        .iter()
-                        .filter(|f| f.material == material && f.component == component)
-                    {
-                        for i in 0..3 {
-                            vertices.extend((0..3).map(|axis| {
-                                (face.points[i][axis] - model.center[axis]) / model.radius
-                            }));
-                            vertices.extend(face.normals[i]);
-                            vertices.extend(face.uv[i]);
-                            vertices.extend(face.colors[i].map(|c| f32::from(c) / 255.0));
+                for &interactable in &interact_slots {
+                    for material in 0..model.materials.len() {
+                        let start = (vertices.len() / 12) as i32;
+                        for face in model.faces.iter().filter(|f| {
+                            f.material == material
+                                && f.component == component
+                                && f.interactable == interactable
+                        }) {
+                            for i in 0..3 {
+                                vertices.extend((0..3).map(|axis| {
+                                    (face.points[i][axis] - model.center[axis]) / model.radius
+                                }));
+                                vertices.extend(face.normals[i]);
+                                vertices.extend(face.uv[i]);
+                                vertices.extend(face.colors[i].map(|c| f32::from(c) / 255.0));
+                            }
                         }
-                    }
-                    let count = (vertices.len() / 12) as i32 - start;
-                    if count > 0 {
-                        ranges.push(Range {
-                            start,
-                            count,
-                            material,
-                            component,
-                        });
+                        let count = (vertices.len() / 12) as i32 - start;
+                        if count > 0 {
+                            ranges.push(Range {
+                                start,
+                                count,
+                                material,
+                                component,
+                                interactable,
+                            });
+                        }
                     }
                 }
             }
@@ -153,10 +194,27 @@ impl Resources {
         settings: &Settings,
         textures: &[(String, egui::TextureId)],
         vinyl: Option<egui::TextureId>,
+        vinyl_on_primary: bool,
     ) {
         let gl = &self.gl;
-        // SAFETY: egui invokes us with its current GL context and scoped viewport. It
-        // restores its program, blend state, VAO and buffers after this callback.
+        let part_mats: Vec<[f32; 16]> = model
+            .interactables
+            .iter()
+            .enumerate()
+            .map(|(idx, part)| {
+                let frac = settings.part_animated.get(idx).copied().unwrap_or(0.0);
+                if frac <= 1e-4 {
+                    IDENTITY_MAT4
+                } else {
+                    let piv = [
+                        (part.pivot[0] - model.center[0]) / model.radius,
+                        (part.pivot[1] - model.center[1]) / model.radius,
+                        (part.pivot[2] - model.center[2]) / model.radius,
+                    ];
+                    part_rotation_matrix(piv, part.axis, part.max_angle_rad * frac)
+                }
+            })
+            .collect();
         unsafe {
             gl.clear(glow::DEPTH_BUFFER_BIT);
             gl.enable(glow::DEPTH_TEST);
@@ -183,6 +241,7 @@ impl Resources {
                 settings.pan.x,
                 settings.pan.y,
             );
+            let part_loc = gl.get_uniform_location(self.program, "partMatrix");
             gl.polygon_mode(
                 glow::FRONT_AND_BACK,
                 if settings.wire {
@@ -210,12 +269,20 @@ impl Resources {
                     {
                         continue;
                     }
+                    let mat4 = range
+                        .interactable
+                        .and_then(|idx| part_mats.get(idx))
+                        .unwrap_or(&IDENTITY_MAT4);
+                    gl.uniform_matrix_4_f32_slice(part_loc.as_ref(), false, mat4);
                     let m = &model.materials[range.material];
                     let rgb = [m.color[0], m.color[1], m.color[2]];
-                    let is_remap =
-                        m.texture.starts_with('#') || m.texture.eq_ignore_ascii_case("remap");
                     let primary = matches!(rgb, [60, 255, 0] | [0, 255, 255]);
                     let secondary = matches!(rgb, [255, 0, 175] | [255, 0, 255]);
+                    let is_remap = is_remap_texture(&m.texture)
+                        || (vinyl_on_primary
+                            && primary
+                            && !m.texture.contains("bonnet")
+                            && !m.texture.contains("disk"));
                     let vinyl_tex = if settings.textured && is_remap {
                         vinyl.and_then(|id| painter.texture(id))
                     } else {
@@ -245,7 +312,7 @@ impl Resources {
                         && rgb[1] == rgb[2]
                         && (120..=210).contains(&rgb[0])
                     {
-                        // GTA peds store muted ~149/255 ambient gray alongside skin diffuse textures.
+                        // У педов GTA базовый диффуз хранится с приглушённым серым ~149/255.
                         rgb.map(|c| (f32::from(c) / 255.0 * 1.45).min(1.0))
                     } else {
                         rgb.map(|c| f32::from(c) / 255.0)
@@ -280,8 +347,6 @@ impl Resources {
 }
 impl Drop for Resources {
     fn drop(&mut self) {
-        // SAFETY: View is owned by the GUI render thread; GL resource destruction
-        // occurs there while the application's persistent context remains current.
         unsafe {
             self.gl.delete_buffer(self.buffer);
             self.gl.delete_vertex_array(self.vao);
@@ -304,6 +369,8 @@ struct Settings {
     primary: [f32; 3],
     secondary: [f32; 3],
     components: Vec<bool>,
+    part_open: Vec<f32>,
+    part_animated: Vec<f32>,
 }
 pub struct View {
     model: Arc<Model>,
@@ -317,6 +384,7 @@ impl View {
             .iter()
             .map(|c| c.active_by_default)
             .collect();
+        let part_count = model.interactables.len();
         Self {
             model: Arc::new(model),
             settings: Settings {
@@ -333,6 +401,8 @@ impl View {
                 primary: [0.5, 0.53, 0.58],
                 secondary: [0.65, 0.65, 0.65],
                 components,
+                part_open: vec![0.0; part_count],
+                part_animated: vec![0.0; part_count],
             },
             resources: Arc::new(Mutex::new(Ok(None))),
         }
@@ -349,6 +419,7 @@ impl View {
         textures: &[(String, egui::TextureHandle)],
         paintjob: bool,
         vinyl: Option<&egui::TextureHandle>,
+        vinyl_on_primary: bool,
         extra_controls: impl FnOnce(&mut egui::Ui),
     ) -> Option<egui::Response> {
         let active_components = self
@@ -358,6 +429,13 @@ impl View {
             .filter(|&&enabled| enabled)
             .count();
         let total_components = self.model.components.len();
+        let open_parts = self
+            .settings
+            .part_open
+            .iter()
+            .filter(|&&v| v > 0.02)
+            .count();
+        let total_parts = self.model.interactables.len();
         let has_paint_materials = self.model.materials.iter().any(|m| {
             matches!(
                 [m.color[0], m.color[1], m.color[2]],
@@ -405,6 +483,58 @@ impl View {
                     ui.close_menu();
                 }
             });
+
+            if total_parts > 0 {
+                theme::panel_menu(
+                    ui,
+                    format!("Двери ({open_parts}/{total_parts})"),
+                    |ui| {
+                        ui.set_min_width(220.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Открыть все").clicked() {
+                                self.settings.part_open.fill(1.0);
+                            }
+                            if ui.button("Закрыть все").clicked() {
+                                self.settings.part_open.fill(0.0);
+                            }
+                        });
+                        ui.separator();
+                        egui::ScrollArea::vertical()
+                            .max_height(260.0)
+                            .show(ui, |ui| {
+                                for (val, part) in self
+                                    .settings
+                                    .part_open
+                                    .iter_mut()
+                                    .zip(&self.model.interactables)
+                                {
+                                    ui.horizontal(|ui| {
+                                        let mut is_open = *val > 0.02;
+                                        if ui.checkbox(&mut is_open, &part.label).changed() {
+                                            *val = if is_open { 1.0 } else { 0.0 };
+                                        }
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                let mut pct = *val * 100.0;
+                                                if ui
+                                                    .add_sized(
+                                                        [82.0, theme::CONTROL_H],
+                                                        egui::Slider::new(&mut pct, 0.0..=100.0)
+                                                            .show_value(false),
+                                                    )
+                                                    .changed()
+                                                {
+                                                    *val = (pct / 100.0).clamp(0.0, 1.0);
+                                                }
+                                            },
+                                        );
+                                    });
+                                }
+                            });
+                    },
+                );
+            }
 
             if total_components > 0 {
                 theme::panel_menu(
@@ -522,9 +652,28 @@ impl View {
         {
             self.reset_camera();
         }
+        let dt = ui.input(|i| i.stable_dt).min(0.05);
         if self.settings.auto_rotate && !interacting {
-            let dt = ui.input(|i| i.stable_dt).min(0.05);
             self.settings.yaw += dt * 0.55;
+            ui.ctx().request_repaint();
+        }
+        let mut animating_parts = false;
+        for (anim, &target) in self
+            .settings
+            .part_animated
+            .iter_mut()
+            .zip(&self.settings.part_open)
+        {
+            let diff = target - *anim;
+            if diff.abs() > 0.002 {
+                let step = (dt * 9.0).min(1.0);
+                *anim += diff * step;
+                animating_parts = true;
+            } else {
+                *anim = target;
+            }
+        }
+        if animating_parts {
             ui.ctx().request_repaint();
         }
         self.settings.aspect = rect.width() / rect.height().max(1.0);
@@ -550,7 +699,14 @@ impl View {
                     *state = Resources::new(painter.gl().clone(), &model).map(Some);
                 }
                 if let Ok(Some(gpu)) = state.as_ref() {
-                    gpu.draw(painter, &model, &settings, &textures, vinyl_id);
+                    gpu.draw(
+                        painter,
+                        &model,
+                        &settings,
+                        &textures,
+                        vinyl_id,
+                        vinyl_on_primary,
+                    );
                 }
             })),
         });

@@ -1,8 +1,7 @@
-//! Transactional archive replacement with a recoverable original on the same volume.
+//! Транзакционная замена архивов с сохранением резервной копии на том же томе.
 use province_archive::{Archive, Edit, Profile};
 use std::path::Path;
 
-/// Write an edited resource atomically, keeping a backup when replacing a file.
 pub fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
     let stamp = std::time::SystemTime::now()
@@ -77,7 +76,7 @@ fn replace(original: &Path, replacement: &Path, backup: &Path) -> Result<(), Str
             .chain(Some(0))
             .collect::<Vec<_>>()
     };
-    // SAFETY: nul-terminated path buffers are alive throughout this synchronous call.
+    // Нуль-терминированные буферы путей живут до конца синхронного вызова.
     if unsafe {
         ReplaceFileW(
             wide(original).as_ptr(),

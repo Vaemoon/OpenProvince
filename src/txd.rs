@@ -1,4 +1,4 @@
-//! Bounded D3D9 RenderWare texture previews; decoding happens on the archive worker.
+//! Декодер D3D9 RenderWare-текстур для предпросмотра.
 
 pub struct Texture {
     pub name: String,

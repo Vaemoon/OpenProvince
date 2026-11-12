@@ -1,4 +1,4 @@
-//! Headless software 3D thumbnail rasterizer for OpenProvince Trainer and catalog exports.
+//! Программный рендерер 3D-превью для экспорта миниатюр каталога.
 use crate::{dff, preview, txd};
 use province_archive::Archive;
 use std::{
@@ -425,7 +425,7 @@ fn index_archives(models_dir: &Path) -> ArchiveIndex {
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("img")))
         .collect();
-    // Prioritize Province overrides over base GTA archives.
+    // Архивы Province должны переопределять базовые архивы GTA.
     paths.sort_by_key(|p| {
         let s = p
             .file_name()
@@ -550,7 +550,6 @@ mod tests {
 
     fn synthetic_ped(map_point: impl Fn([f32; 3]) -> [f32; 3]) -> dff::Model {
         let mut pts = Vec::new();
-        // Feet at z=-0.95 sticking toes forward in +Y (+0.18 vs shin 0.0)
         for &(x, y, z) in &[
             (-0.1, 0.18, -0.95),
             (0.1, 0.18, -0.95),
@@ -578,12 +577,15 @@ mod tests {
                 normals: [[0.0, 1.0, 0.0]; 3],
                 colors: [[255; 4]; 3],
                 component: None,
+                interactable: None,
             })
             .collect();
         dff::Model {
             faces,
             materials: Vec::new(),
             components: Vec::new(),
+            interactables: Vec::new(),
+            is_vehicle: false,
             center: [0.0; 3],
             radius: 1.0,
             vertices: 12,
@@ -593,7 +595,6 @@ mod tests {
 
     #[test]
     fn ped_orient_uprights_horizontal_and_turns_backward_skins_to_front() {
-        // Case 1: +Y horizontal ped facing +Z (mapped to -Y after +Y->+Z) -> flipped to face +Y camera
         let horiz_y = synthetic_ped(|[x, y, z]| [x, z, y]);
         let orient_y = PedOrient::from_model(&horiz_y).expect("orient y");
         assert_eq!(orient_y.height_axis, 1);
@@ -602,7 +603,6 @@ mod tests {
         assert!(foot[2] < -0.5, "feet must end at -Z bottom: {foot:?}");
         assert!(foot[1] > 0.1, "toes must face +Y camera: {foot:?}");
 
-        // Case 2: +Z upright ped facing backwards (-Y) -> rotated 180 deg so toes face +Y
         let back_z = synthetic_ped(|[x, y, z]| [-x, -y, z]);
         let orient_b = PedOrient::from_model(&back_z).expect("orient back");
         assert_eq!(orient_b.height_axis, 2);

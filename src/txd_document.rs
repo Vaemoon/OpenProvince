@@ -1,4 +1,4 @@
-//! Lossless TXD container edits: untouched native textures and plugins retain exact bytes.
+//! Редактирование контейнера TXD без пережатия нетронутых текстур и плагинов.
 use crate::txd;
 use std::sync::Arc;
 
@@ -95,7 +95,6 @@ fn validate_name(name: &str) -> Result<(), String> {
 }
 
 impl Document {
-    /// Export native DXT mip levels without recompressing them; other formats become RGBA.
     pub fn dds(&self, index: usize) -> Result<Vec<u8>, String> {
         let data = texture_data(self.texture(index)?)?;
         if data.len() < 88 || word(data, 0)? != 9 {
@@ -188,7 +187,6 @@ impl Document {
         Ok(bytes)
     }
 
-    /// Import standard 2D legacy DDS DXT1-5 while preserving its compressed blocks.
     pub fn replace_dds(&mut self, index: usize, bytes: &[u8]) -> Result<(), String> {
         if bytes.get(..4) != Some(b"DDS ") || word(bytes, 4)? != 124 || word(bytes, 76)? != 32 {
             return Err("Неверный заголовок DDS".into());

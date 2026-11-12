@@ -1,4 +1,4 @@
-//! Worker-side model/texture resolution across adjacent Province archives and IDE/JSON catalogs.
+//! Резолвинг DFF/TXD по соседним архивам и IDE/JSON/BIN каталогам клиента.
 use crate::{dff, txd};
 use province_archive::{Archive, Profile};
 use std::{
@@ -18,6 +18,7 @@ pub struct PlayerCloth {
 pub struct Catalog {
     pub models: BTreeMap<String, String>,
     pub hashed_models: BTreeMap<u32, String>,
+    pub vehicles: BTreeSet<String>,
     pub parents: Vec<(String, String)>,
     pub player_clothes: Vec<PlayerCloth>,
 }
@@ -112,10 +113,24 @@ fn find_game_roots(start: &Path) -> Vec<PathBuf> {
     {
         if (candidate.join("OpenProvince").is_dir()
             || candidate.join("catalog").is_dir()
-            || candidate.join("data").is_dir())
+            || candidate.join("data").is_dir()
+            || candidate.join("decoded_data").is_dir())
             && !roots.iter().any(|r| r == candidate)
         {
             roots.push(candidate.to_path_buf());
+        }
+    }
+    for base in [
+        "C:/Province Games/bin",
+        "C:/Province Games",
+        "D:/Province Games/bin",
+        "D:/Province Games",
+        "Z:/Province Games/bin",
+        "Z:/Province Games",
+    ] {
+        let candidate = PathBuf::from(base);
+        if candidate.is_dir() && !roots.iter().any(|r| r == &candidate) {
+            roots.push(candidate);
         }
     }
     roots
@@ -184,6 +199,9 @@ fn parse_ide_into(text: &str, catalog: &mut Catalog) {
             Section::Objs | Section::Cars | Section::Peds if fields.len() >= 3 => {
                 let model = fields[1].to_ascii_lowercase();
                 let txd = fields[2].to_ascii_lowercase();
+                if section == Section::Cars && !model.is_empty() {
+                    catalog.vehicles.insert(model.clone());
+                }
                 if !model.is_empty() && !txd.is_empty() && txd != "null" {
                     catalog.models.insert(model, txd);
                 }
@@ -235,6 +253,10 @@ fn load_json_metadata(path: &Path, catalog: &mut Catalog) {
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
         return;
     };
+    let is_vehicles = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.to_ascii_lowercase().contains("vehicles"));
     let entries = value
         .as_array()
         .or_else(|| value.get("models").and_then(|v| v.as_array()));
@@ -243,6 +265,9 @@ fn load_json_metadata(path: &Path, catalog: &mut Catalog) {
             continue;
         };
         let lower = name.to_ascii_lowercase();
+        if is_vehicles {
+            catalog.vehicles.insert(lower.clone());
+        }
         if let Some(texture) = entry
             .get("texture")
             .or_else(|| entry.get("txd"))
@@ -279,7 +304,7 @@ pub fn catalog_for_path(start: &Path) -> Arc<Catalog> {
     let mut catalog = Catalog::default();
     let mut ide_files = Vec::new();
     for root in &roots {
-        for sub in ["data", "unpacked/data"] {
+        for sub in ["data", "unpacked/data", "decoded_data"] {
             collect_ide_files(&root.join(sub), &mut ide_files);
         }
     }
@@ -328,7 +353,6 @@ pub fn catalog_for_path(start: &Path) -> Arc<Catalog> {
     catalog
 }
 
-/// An alternative texture dictionary stored beside the model's base dictionary.
 #[derive(Clone)]
 pub struct Variant {
     pub name: String,
@@ -487,8 +511,7 @@ pub fn load_variant(variant: &Variant, targets: &[String]) -> Result<Vec<txd::Te
         .read(variant.index, &Profile::inspected_client())
         .map_err(|e| e.to_string())?;
     let mut textures = txd::previews(&bytes);
-    // GTA paintjobs bind the dictionary's first texture to remap/# materials.
-    // Retain named entries as well: custom dictionaries may override several materials.
+    // Покраски GTA связывают remap/# материалы с первой текстурой словаря.
     if let Some(first) = textures.first() {
         let aliases: Vec<_> = targets
             .iter()
@@ -684,7 +707,6 @@ pub fn load_model_with_variant(
             let is_selected_slot =
                 *slot == selected_slot || (selected_slot == 17 && matches!(*slot, 0 | 2));
             if is_selected_slot && selected_slot == 17 && *slot != 0 {
-                // Special outfit covers torso+legs via the single outfit model
                 continue;
             }
             let (stem, req_txd) = if is_selected_slot {
@@ -718,9 +740,8 @@ pub fn load_model_with_variant(
     }
 
     let bytes = archive.read(index, &profile).map_err(|e| e.to_string())?;
-    // GTA SA/MTA only applies vehicles.ide wheel scale when replacing unit wheels dynamically;
-    // DFF meshes themselves already carry native wheel dimensions.
-    let model = dff::decode(&bytes)?;
+    let mut model = dff::decode(&bytes)?;
+    model.is_vehicle |= catalog.vehicles.contains(&name);
     let wanted: BTreeSet<String> = model
         .materials
         .iter()
@@ -867,7 +888,7 @@ mod tests {
             .materials
             .iter()
             .map(|m| m.texture.clone())
-            .filter(|n| n.starts_with('#') || n.eq_ignore_ascii_case("remap"))
+            .filter(|n| dff::is_remap_texture(n))
             .collect();
         assert!(
             !targets.is_empty(),
@@ -938,7 +959,7 @@ mod tests {
         bin.extend_from_slice(&0x2A09_3EF5u32.to_le_bytes());
         bin.extend_from_slice(&2u32.to_le_bytes());
 
-        // Record 0: type=1, hash=gta_uppercase_hash("Mirnnew100"), txd="Mirnnew20"
+        // Запись 0 (type=1): хеш -> Mirnnew20
         bin.push(1);
         bin.extend_from_slice(&9063u32.to_le_bytes());
         bin.extend_from_slice(&0u32.to_le_bytes());
@@ -948,7 +969,7 @@ mod tests {
         bin.extend_from_slice(&(txd.len() as u32).to_le_bytes());
         bin.extend_from_slice(txd);
 
-        // Group marker + Record 1: type=6 (txdp), child="Mirnnew20", parent="province_map"
+        // Маркер группы + type=6 (txdp)
         bin.push(0xFF);
         bin.push(6);
         let child = b"Mirnnew20";

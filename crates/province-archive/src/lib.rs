@@ -1,7 +1,4 @@
-//! Read-only Province IMG indexing and versioned resource decoding.
-//!
-//! The directory transform was checked against every entry in the supplied client.
-//! AES remainder behavior was compared with its native x86 decrypter.
+//! Индексация и шифрованное чтение/запись IMG-архивов и ресурсов MTA Province.
 
 use aes::Aes128;
 use aes::cipher::{Array, BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
@@ -15,7 +12,6 @@ pub mod catalog;
 const SECTOR: u64 = 2048;
 const NAME_MASK: [u8; 4] = [0xdd, 0x7a, 0x20, 0x70];
 
-/// Failures preserve the original archive and never silently select another key.
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("I/O: {0}")]
@@ -34,7 +30,6 @@ pub enum Error {
     InvalidText(usize),
 }
 
-/// Key material belongs to the inspected client build, not every Province release.
 #[derive(Clone)]
 pub struct Profile {
     world_key: [u8; 16],
@@ -42,9 +37,7 @@ pub struct Profile {
 }
 
 impl Profile {
-    /// The locally inspected November 2026 client profile.
     pub fn inspected_client() -> Self {
-        // Literal byte arrays avoid fallible parsing in the default constructor.
         Self {
             world_key: [
                 0xd6, 0x99, 0xc2, 0x17, 0xce, 0x83, 0xff, 0xc0, 0x51, 0x0e, 0x82, 0xf0, 0x55, 0xcd,
@@ -57,13 +50,11 @@ impl Profile {
         }
     }
 
-    /// Override the world-resource key for another authorized client build.
     pub fn with_world_key(mut self, hex: &str) -> Result<Self, Error> {
         self.world_key = parse_key(hex)?;
         Ok(self)
     }
 
-    /// Decode a standalone boot-time or world resource based on its known filename.
     pub fn decode_file(&self, path: &Path, bytes: &[u8]) -> Vec<u8> {
         let name = path
             .file_name()
@@ -83,7 +74,6 @@ impl Profile {
     }
 }
 
-/// Parse an explicit AES-128 key without accepting short or malformed values.
 pub fn parse_key(hex: &str) -> Result<[u8; 16], Error> {
     if hex.len() != 32 || !hex.is_ascii() {
         return Err(Error::InvalidKey);
@@ -102,7 +92,6 @@ pub fn parse_key(hex: &str) -> Result<[u8; 16], Error> {
     Ok(key)
 }
 
-/// Decode the 24-byte directory field; plain ASCII IMG names also work.
 pub fn decode_name(raw: &[u8; 24]) -> Result<(String, bool), Error> {
     let encrypted = !raw[0].is_ascii();
     let mut decoded = *raw;
@@ -311,7 +300,6 @@ fn write_archive(entries: &[WriteEntry], output: &Path, profile: &Profile) -> Re
     result
 }
 
-/// Produce sector-aligned dWV+ payloads with zero padding and a native-safe AES tail.
 pub fn encode_payload(bytes: &[u8], key: &[u8; 16]) -> Result<Vec<u8>, Error> {
     let length = bytes
         .len()
@@ -330,7 +318,7 @@ pub fn encode_payload(bytes: &[u8], key: &[u8; 16]) -> Result<Vec<u8>, Error> {
     encoded[..4].copy_from_slice(b"dWV+");
     encoded[4..4 + bytes.len()].copy_from_slice(bytes);
     let cipher = Aes128::new(&Array::from(*key));
-    // Last 12 stored bytes are not a full AES block and native decoding zero-fills them.
+    // Последние 12 байт не образуют полный AES-блок; нативный декодер зануляет их.
     for batch in encoded[4..length - 12].chunks_mut(16 * 32) {
         let count = batch.len() / 16;
         let mut blocks = [Array::from([0u8; 16]); 32];
@@ -351,7 +339,6 @@ pub fn encode_payload(bytes: &[u8], key: &[u8; 16]) -> Result<Vec<u8>, Error> {
 }
 
 impl Archive {
-    /// Save edits to a new Province IMG. Untouched entry payloads remain byte-for-byte intact.
     pub fn save_as(&self, output: &Path, edits: &[Edit], profile: &Profile) -> Result<(), Error> {
         let mut entries: Vec<_> = self
             .entries
@@ -389,7 +376,6 @@ impl Archive {
         }
         write_archive(&entries, output, profile)
     }
-    /// Check the header, directory length, filenames and every entry's bounds.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         let path = path.as_ref();
         let mut file = File::open(path)?;
@@ -443,22 +429,18 @@ impl Archive {
         })
     }
 
-    /// Source path, kept separate from all export paths.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// Original archive size in bytes.
     pub fn file_len(&self) -> u64 {
         self.file_len
     }
 
-    /// Entries remain in their original directory order.
     pub fn entries(&self) -> &[Entry] {
         &self.entries
     }
 
-    /// Read a single entry and decode dWV+ payloads with the selected world key.
     pub fn read(&self, index: usize, profile: &Profile) -> Result<Vec<u8>, Error> {
         let entry = self.entries.get(index).ok_or(Error::EntryIndex(index))?;
         let size = usize::try_from(entry.size)
@@ -476,8 +458,6 @@ impl Archive {
         }
     }
 
-    /// Export an entry without overwriting any existing file.
-    /// Malformed original containers are preserved and reported rather than discarded.
     pub fn extract(
         &self,
         index: usize,
@@ -507,7 +487,6 @@ impl Archive {
     }
 }
 
-/// An extraction outcome; warnings refer to the source resource's structure.
 #[derive(Debug, Serialize)]
 pub struct Exported {
     pub path: PathBuf,
@@ -515,7 +494,6 @@ pub struct Exported {
     pub warning: Option<String>,
 }
 
-/// Identified container extent, excluding sector padding when its header is valid.
 #[derive(Debug, Clone, Serialize)]
 pub struct Inspection {
     pub format: String,
@@ -523,7 +501,6 @@ pub struct Inspection {
     pub warning: Option<String>,
 }
 
-/// Structural inspection never invents replacement geometry or discards malformed data.
 pub fn inspect(name: &str, bytes: &[u8]) -> Inspection {
     let extension = Path::new(name)
         .extension()
@@ -600,8 +577,6 @@ pub fn inspect(name: &str, bytes: &[u8]) -> Inspection {
     result
 }
 
-/// Match the native client's AES-ECB decoding, including its zero-filled remainder.
-/// Plain resources pass through unchanged. The four-byte marker is not authentication.
 pub fn decode_payload(bytes: &[u8], key: &[u8; 16]) -> Vec<u8> {
     let Some(body) = bytes.strip_prefix(b"dWV+") else {
         return bytes.to_vec();
@@ -629,7 +604,6 @@ pub fn decode_payload(bytes: &[u8], key: &[u8; 16]) -> Vec<u8> {
     decoded
 }
 
-/// Recover the client's u32-length-prefixed text records, requiring the end marker.
 pub fn decode_text_records(bytes: &[u8]) -> Result<Vec<u8>, Error> {
     let mut offset = 0usize;
     let mut text = Vec::new();

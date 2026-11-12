@@ -1,9 +1,7 @@
-//! Model identifiers are recovered from client IDE files, without guessing server names.
 use crate::Error;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-/// A source IDE definition. `name` is the exact model identifier used by the client.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Model {
     pub id: u32,
@@ -14,7 +12,6 @@ pub struct Model {
     pub gxt_key: Option<String>,
 }
 
-/// Parse cars or peds sections, rejecting duplicate IDs and incomplete definitions.
 pub fn parse(text: &str, section: &str) -> Result<Vec<Model>, Error> {
     if !["cars", "peds"].contains(&section) {
         return Err(Error::InvalidArchive(
