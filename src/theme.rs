@@ -273,13 +273,13 @@ pub fn tab_toggle(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::Respo
     .inner
 }
 
-/// Явно кликабельный выпадающий список с фоном, границей и стрелкой вниз.
+/// Явно кликабельный выпадающий список с фоном, границей и векторной стрелкой вниз.
 pub fn panel_menu<R>(
     ui: &mut egui::Ui,
     title: impl AsRef<str>,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) {
-    let label = format!("{}  ▾", title.as_ref());
+    let label = format!("{}    ", title.as_ref());
     let button = egui::Button::new(egui::RichText::new(label).size(12.5))
         .corner_radius(3.0)
         .min_size(Vec2::new(0.0, CONTROL_H));
@@ -290,7 +290,24 @@ pub fn panel_menu<R>(
         inactive.weak_bg_fill = BG_SURFACE;
         inactive.bg_stroke = Stroke::new(1.0_f32, BORDER_INPUT);
         inactive.fg_stroke = Stroke::new(1.0_f32, TEXT_PRIMARY);
-        egui::menu::menu_custom_button(ui, button, add_contents);
+        let inner = egui::menu::menu_custom_button(ui, button, add_contents);
+        let rect = inner.response.rect;
+        let cx = rect.right() - 10.0;
+        let cy = rect.center().y + 0.5;
+        let arrow_color = if inner.response.hovered() || inner.inner.is_some() {
+            TEXT_PRIMARY
+        } else {
+            TEXT_SECONDARY
+        };
+        ui.painter().add(egui::Shape::convex_polygon(
+            vec![
+                egui::pos2(cx - 3.5, cy - 2.0),
+                egui::pos2(cx + 3.5, cy - 2.0),
+                egui::pos2(cx, cy + 2.5),
+            ],
+            arrow_color,
+            Stroke::NONE,
+        ));
     });
 }
 
@@ -346,6 +363,18 @@ pub fn draw_checkerboard(painter: &egui::Painter, rect: egui::Rect, tile: f32) {
             );
         }
     }
+}
+
+pub fn section_bar_fill(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), ROW_H),
+        egui::Sense::hover(),
+    );
+    ui.painter().rect_filled(rect, 0.0, BG_CHROME);
+    ui.painter().line_segment(
+        [rect.left_bottom(), rect.right_bottom()],
+        Stroke::new(1.0_f32, BORDER_LINE),
+    );
 }
 
 pub fn section_bar(ui: &mut egui::Ui, title: &str, count: usize) {

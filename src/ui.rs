@@ -1217,7 +1217,7 @@ impl Browser {
                             let label = if self.changes_open {
                                 format!("Правки: {} ▲", self.edits.len())
                             } else {
-                                format!("Правки: {} ▾", self.edits.len())
+                                format!("Правки: {} ▼", self.edits.len())
                             };
                             if ui
                                 .add(
@@ -1473,15 +1473,18 @@ impl Browser {
                                     label.to_owned()
                                 };
                                 let btn_fn = |ui: &mut egui::Ui| {
-                                    let resp = ui.selectable_label(
-                                        self.sort == col_id,
-                                        egui::RichText::new(title).size(12.0).color(
-                                            if self.sort == col_id {
-                                                theme::TEXT_PRIMARY
-                                            } else {
-                                                theme::TEXT_SECONDARY
-                                            },
-                                        ),
+                                    let resp = ui.add(
+                                        egui::Button::new(
+                                            egui::RichText::new(title).size(12.0).color(
+                                                if self.sort == col_id {
+                                                    theme::TEXT_PRIMARY
+                                                } else {
+                                                    theme::TEXT_SECONDARY
+                                                },
+                                            ),
+                                        )
+                                        .frame(false)
+                                        .min_size(Vec2::new(0.0, theme::HEADER_H)),
                                     );
                                     if resp.clicked() && col_id < 10 {
                                         if self.sort == col_id {
@@ -1530,7 +1533,9 @@ impl Browser {
                                     theme::section_bar(ui, title, *count);
                                 });
                                 for _ in 0..if multi { 3 } else { 2 } {
-                                    row.col(|_| {});
+                                    row.col(|ui| {
+                                        theme::section_bar_fill(ui);
+                                    });
                                 }
                             }
                             RowItem::Entry(item) => {
