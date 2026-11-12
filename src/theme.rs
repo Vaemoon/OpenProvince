@@ -252,15 +252,18 @@ pub fn bordered_button(ui: &mut egui::Ui, label: &str, min_size: Vec2) -> egui::
 
 pub fn segmented_toggle(ui: &mut egui::Ui, labels: &[&str], active: usize) -> Option<usize> {
     let mut clicked = None;
+    let rtl = ui.layout().main_dir() == egui::Direction::RightToLeft;
     egui::Frame::new()
         .fill(BG_INPUT)
         .stroke(Stroke::new(1.0_f32, BORDER_LINE))
         .corner_radius(3.0)
         .inner_margin(Margin::same(2))
         .show(ui, |ui| {
-            ui.with_layout(egui::Layout::left_to_right(Align::Center), |ui| {
+            ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                for (idx, &label) in labels.iter().enumerate() {
+                for pos in 0..labels.len() {
+                    let idx = if rtl { labels.len() - 1 - pos } else { pos };
+                    let label = labels[idx];
                     let selected = idx == active;
                     let resp = ui
                         .scope(|ui| {
