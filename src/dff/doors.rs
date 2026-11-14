@@ -67,10 +67,20 @@ fn classify_part_name(name: &str) -> Option<(String, String, DoorKind, u8)> {
         ));
     }
     if base == "gear_l" {
-        return Some(("gear_l".into(), "Шасси (лев.)".into(), DoorKind::GearLeft, 7));
+        return Some((
+            "gear_l".into(),
+            "Шасси (лев.)".into(),
+            DoorKind::GearLeft,
+            7,
+        ));
     }
     if base == "gear_r" {
-        return Some(("gear_r".into(), "Шасси (прав.)".into(), DoorKind::GearRight, 8));
+        return Some((
+            "gear_r".into(),
+            "Шасси (прав.)".into(),
+            DoorKind::GearRight,
+            8,
+        ));
     }
     None
 }
@@ -110,8 +120,9 @@ pub(super) fn finalize_interactables(
         let Some(frame_idx) = frame_opt else {
             continue;
         };
-        let Some((key, label, kind, order)) =
-            frames.get(frame_idx).and_then(|f| classify_part_name(&f.name))
+        let Some((key, label, kind, order)) = frames
+            .get(frame_idx)
+            .and_then(|f| classify_part_name(&f.name))
         else {
             continue;
         };

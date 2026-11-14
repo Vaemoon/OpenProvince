@@ -96,7 +96,7 @@ fn validate_name(name: &str) -> Result<(), String> {
 impl Document {
     pub fn dds(&self, index: usize) -> Result<Vec<u8>, String> {
         let data = texture_data(self.texture(index)?)?;
-        if data.len() < 88 || word(data, 0)? != 9 {
+        if data.len() < 88 || !matches!(word(data, 0)?, 8 | 9) {
             return Err("Неподдерживаемая платформа TXD".into());
         }
         let format = word(data, 76)?;
@@ -229,7 +229,7 @@ impl Document {
             .iter_mut()
             .find(|c| c.kind == 1)
             .ok_or("Нет данных текстуры")?;
-        if word(&original.payload, 0)? != 9 || original.payload.len() < 88 {
+        if !matches!(word(&original.payload, 0)?, 8 | 9) || original.payload.len() < 88 {
             return Err("Неподдерживаемая платформа TXD".into());
         }
         let mut data = original.payload[..88].to_vec();
@@ -350,7 +350,7 @@ impl Document {
                     .ok()
                     .and_then(|c| texture_data(c).ok())
                     .unwrap_or_default();
-                let supported = word(data, 0).is_ok_and(|v| v == 9) && data.len() >= 88;
+                let supported = word(data, 0).is_ok_and(|v| v == 8 || v == 9) && data.len() >= 88;
                 let format = word(data, 76).unwrap_or_default();
                 Entry {
                     name: data
@@ -364,16 +364,24 @@ impl Document {
                         .get(82..84)
                         .map_or(0, |b| u16::from_le_bytes([b[0], b[1]]) as usize),
                     mipmaps: data.get(85).copied().unwrap_or(0),
-                    format: match format {
-                        21 => "RGBA 8888".into(),
-                        22 => "RGB 8888".into(),
-                        23 => "RGB 565".into(),
-                        25 => "ARGB 1555".into(),
-                        26 => "ARGB 4444".into(),
-                        f if f.to_le_bytes()[..3] == *b"DXT" => {
-                            String::from_utf8_lossy(&f.to_le_bytes()).into_owned()
+                    format: {
+                        let compression = data.get(87).copied().unwrap_or(0);
+                        match format {
+                            21 => "RGBA 8888".into(),
+                            22 => "RGB 8888".into(),
+                            23 => "RGB 565".into(),
+                            25 => "ARGB 1555".into(),
+                            26 => "ARGB 4444".into(),
+                            f if f.to_le_bytes()[..3] == *b"DXT" => {
+                                String::from_utf8_lossy(&f.to_le_bytes()).into_owned()
+                            }
+                            _ if compression == 1 => "DXT1".into(),
+                            _ if compression == 2 => "DXT2".into(),
+                            _ if compression == 3 => "DXT3".into(),
+                            _ if compression == 4 => "DXT4".into(),
+                            _ if compression == 5 => "DXT5".into(),
+                            _ => format!("D3D {format}"),
                         }
-                        _ => format!("D3D {format}"),
                     },
                     supported,
                 }
@@ -415,7 +423,7 @@ impl Document {
                 .ok_or("Нет данных текстуры")?
                 .payload,
         );
-        if word(data, 0)? != 9 || data.len() < 88 {
+        if !matches!(word(data, 0)?, 8 | 9) || data.len() < 88 {
             return Err("Изменение этой платформы TXD не поддерживается".into());
         }
         data[8..40].fill(0);
@@ -443,7 +451,7 @@ impl Document {
                 .ok_or("Нет данных текстуры")?
                 .payload,
         );
-        if word(data, 0)? != 9 || data.len() < 88 {
+        if !matches!(word(data, 0)?, 8 | 9) || data.len() < 88 {
             return Err("Изменение этой платформы TXD не поддерживается".into());
         }
         *data = encode_image(data, image, mipmaps)?;

@@ -141,9 +141,11 @@ pub(super) fn orient_ped_upright(
         let l = find_bone(left, None);
         let r = find_bone(right, None);
         let mid = match (l, r) {
-            (Some(a), Some(b)) => {
-                Some([(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5])
-            }
+            (Some(a), Some(b)) => Some([
+                (a[0] + b[0]) * 0.5,
+                (a[1] + b[1]) * 0.5,
+                (a[2] + b[2]) * 0.5,
+            ]),
             (Some(a), None) | (None, Some(a)) => Some(a),
             (None, None) => None,
         };
@@ -229,13 +231,8 @@ pub(super) fn orient_ped_upright(
         return;
     };
 
-    let rotate = |v: [f32; 3]| -> [f32; 3] {
-        [
-            dot3(v, basis[0]),
-            dot3(v, basis[1]),
-            dot3(v, basis[2]),
-        ]
-    };
+    let rotate =
+        |v: [f32; 3]| -> [f32; 3] { [dot3(v, basis[0]), dot3(v, basis[1]), dot3(v, basis[2])] };
 
     *low = [f32::INFINITY; 3];
     *high = [f32::NEG_INFINITY; 3];

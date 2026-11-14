@@ -1,11 +1,14 @@
 [workspace]
-members = ["crates/province-archive"]
+members = [
+    "crates/province-archive",
+    "crates/province-mods",
+]
 resolver = "2"
 
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.1.0"
+version = "0.2.0"
 
 [workspace.dependencies]
 aes = "=0.9.3"
@@ -13,6 +16,7 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 province-archive = { path = "crates/province-archive" }
+province-mods = { path = "crates/province-mods" }
 
 [package]
 name = "openprovince"
@@ -22,12 +26,20 @@ license.workspace = true
 
 [dependencies]
 province-archive.workspace = true
+province-mods = { workspace = true, optional = true }
 serde_json.workspace = true
 eframe = "=0.31.1"
 egui_extras = { version = "=0.31.1", default-features = false, features = ["svg"] }
 rfd = "=0.15.4"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "dds", "bmp", "tga"] }
 
+[features]
+default = ["mods"]
+mods = ["dep:province-mods"]
+
 [profile.release]
 lto = "thin"
 strip = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

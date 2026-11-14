@@ -1,5 +1,5 @@
 use crate::{
-    Browser, EntryRef, Message, platform, preview, storage, theme, txd, txd_document, vinyls,
+    Browser, EntryRef, Message, dff, platform, preview, storage, theme, txd, txd_document, vinyls,
 };
 use eframe::egui;
 use province_archive::{Archive, Edit, Profile, pack_directory};
@@ -8,9 +8,13 @@ use std::{path::PathBuf, sync::Arc, thread};
 impl Browser {
     pub(crate) fn sync_window_title(&mut self, ctx: &egui::Context) {
         let app = concat!("OpenProvince ", env!("CARGO_PKG_VERSION"));
-        let dirty = !self.edits.is_empty()
-            || self.txd_editor.as_ref().is_some_and(|e| e.disk_dirty);
-        let prefix = if dirty { "(Не сохранено) " } else { "" };
+        let dirty =
+            !self.edits.is_empty() || self.txd_editor.as_ref().is_some_and(|e| e.disk_dirty);
+        let prefix = if dirty {
+            "(Не сохранено) "
+        } else {
+            ""
+        };
         let title = if let Some(txd_path) = &self.standalone_txd
             && self
                 .txd_editor
@@ -76,6 +80,8 @@ impl Browser {
             return;
         };
         self.standalone_txd = None;
+        self.fxp_editor = None;
+        self.animation_player = None;
         let is_dff = archive
             .entries()
             .get(target.index)
@@ -183,11 +189,9 @@ impl Browser {
                     }
                     send_preview();
                 } else {
-                    match result
-                        .as_ref()
-                        .map_err(Clone::clone)
-                        .and_then(|bytes| preview::decode_model_from_bytes(&archive, target.index, bytes))
-                    {
+                    match result.as_ref().map_err(Clone::clone).and_then(|bytes| {
+                        preview::decode_model_from_bytes(&archive, target.index, bytes)
+                    }) {
                         Ok(model) => {
                             let wanted = preview::model_wanted_textures(&model);
                             let _ = sender.send(Message::Model(generation, Ok(model)));
@@ -198,7 +202,11 @@ impl Browser {
                             if refresh_variants {
                                 let _ = sender.send(Message::Variants(
                                     generation,
-                                    preview::variants_with_archives(&archive, target.index, &opened),
+                                    preview::variants_with_archives(
+                                        &archive,
+                                        target.index,
+                                        &opened,
+                                    ),
                                 ));
                                 send_preview();
                                 ctx.request_repaint();
@@ -397,14 +405,190 @@ impl Browser {
     }
 
     pub(crate) fn open(&mut self, path: PathBuf, ctx: &egui::Context) {
-        if path
+        let ext = path
             .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("txd"))
-        {
+            .and_then(|e| e.to_str())
+            .unwrap_or_default();
+        if ext.eq_ignore_ascii_case("txd") {
             self.open_txd_file(path, ctx);
+        } else if ext.eq_ignore_ascii_case("dff") {
+            self.load_standalone_dff(path, ctx);
+        } else if ext.eq_ignore_ascii_case("fxp") {
+            self.open_fxp_file(path, ctx);
+        } else if ext.eq_ignore_ascii_case("ifp") {
+            self.open_ifp_file(path, ctx);
         } else {
             self.open_many(vec![path], false, ctx);
         }
+    }
+
+    pub(crate) fn open_fxp_file(&mut self, path: PathBuf, ctx: &egui::Context) {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(mut doc) = crate::fxp::FxpDocument::parse(&content) {
+                doc.path = Some(path.clone());
+                self.fxp_editor = Some(crate::fxp::FxpEditor::new(doc));
+                self.preview_open = true;
+                self.model = None;
+                self.txd_editor = None;
+                self.standalone_txd = None;
+                self.animation_player = None;
+                self.status = format!(
+                    "Открыт файл эффектов: {}",
+                    path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or_default()
+                );
+                ctx.request_repaint();
+            }
+        }
+    }
+
+    pub(crate) fn open_ifp_file(&mut self, path: PathBuf, ctx: &egui::Context) {
+        if let Ok(raw) = std::fs::read(&path) {
+            let decoded = Profile::inspected_client().decode_file(&path, &raw);
+            if let Ok(pkg) = crate::ifp::IfpPackage::parse(&decoded) {
+                let count = pkg.animations.len();
+                self.animation_player = Some(crate::ifp::AnimationPlayer::new(pkg));
+                self.preview_open = true;
+                self.fxp_editor = None;
+                self.txd_editor = None;
+                self.standalone_txd = None;
+                self.status = format!(
+                    "Загружен пакет анимаций ({}): {} анимаций",
+                    path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or_default(),
+                    count
+                );
+                ctx.request_repaint();
+            }
+        }
+    }
+
+    pub(crate) fn load_standalone_dff(&mut self, path: PathBuf, ctx: &egui::Context) {
+        if self.txd_editor.as_ref().is_some_and(|e| e.busy) {
+            self.status = "Дождитесь завершения операции с текстурой.".into();
+            return;
+        }
+        self.standalone_txd = None;
+        self.fxp_editor = None;
+        self.animation_player = None;
+        self.loading_model = true;
+        self.loading_textures = true;
+        self.model = None;
+        self.model_error.clear();
+        self.images.clear();
+        self.base_images.clear();
+        self.variants.clear();
+        self.remap_targets.clear();
+        self.vinyl_capable = false;
+        self.vinyl_on_primary = false;
+        self.vinyl_selected = None;
+        self.vinyl_texture = None;
+        self.preview_open = true;
+        self.txd_editor = None;
+        self.generation += 1;
+        let generation = self.generation;
+        self.preview_epoch
+            .store(generation, std::sync::atomic::Ordering::Relaxed);
+        let epoch = self.preview_epoch.clone();
+        let sender = self.sender.clone();
+        let ctx = ctx.clone();
+        let parent = path.parent().map(|p| p.to_path_buf());
+        let file_stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("model")
+            .to_owned();
+        let file_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("model.dff")
+            .to_owned();
+
+        thread::spawn(move || {
+            let aborted = || epoch.load(std::sync::atomic::Ordering::Relaxed) != generation;
+            if aborted() {
+                return;
+            }
+            let raw = match std::fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    let _ = sender.send(Message::Model(generation, Err(e.to_string())));
+                    let _ = sender.send(Message::Preview(generation, Err(e.to_string())));
+                    return;
+                }
+            };
+            let decoded = Profile::inspected_client().decode_file(&path, &raw);
+            let report = platform::format_hex_report(&file_name, &raw);
+            let _ = sender.send(Message::Preview(generation, Ok(report)));
+
+            match dff::decode(&decoded) {
+                Ok(model) => {
+                    let wanted = preview::model_wanted_textures(&model);
+                    let _ = sender.send(Message::Model(generation, Ok(model)));
+                    ctx.request_repaint();
+                    if aborted() {
+                        return;
+                    }
+                    let mut loaded_textures = Vec::new();
+                    if let Some(parent_dir) = parent {
+                        let mut txd_candidates = Vec::new();
+                        let same_txd = parent_dir.join(format!("{file_stem}.txd"));
+                        let same_txd_upper = parent_dir.join(format!("{file_stem}.TXD"));
+                        if same_txd.exists() {
+                            txd_candidates.push(same_txd);
+                        } else if same_txd_upper.exists() {
+                            txd_candidates.push(same_txd_upper);
+                        }
+                        for common in &["vehicle.txd", "generic.txd", "wheels.txd"] {
+                            let common_path = parent_dir.join(common);
+                            if common_path.exists() && !txd_candidates.contains(&common_path) {
+                                txd_candidates.push(common_path);
+                            }
+                        }
+                        if let Ok(entries) = std::fs::read_dir(&parent_dir) {
+                            for entry in entries.flatten() {
+                                let p = entry.path();
+                                if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("txd"))
+                                    && !txd_candidates.contains(&p)
+                                {
+                                    txd_candidates.push(p);
+                                }
+                            }
+                        }
+
+                        let mut found_names = std::collections::BTreeSet::new();
+                        for txd_path in txd_candidates {
+                            if aborted() {
+                                return;
+                            }
+                            if let Ok(txd_raw) = std::fs::read(&txd_path) {
+                                let txd_dec =
+                                    Profile::inspected_client().decode_file(&txd_path, &txd_raw);
+                                let found = txd::matching(&txd_dec, Some(&wanted));
+                                for tex in found {
+                                    let lower = tex.name.trim().to_ascii_lowercase();
+                                    if found_names.insert(lower) {
+                                        loaded_textures.push(tex);
+                                    }
+                                }
+                            }
+                            if loaded_textures.len() >= wanted.len() && !wanted.is_empty() {
+                                break;
+                            }
+                        }
+                    }
+                    let _ = sender.send(Message::Images(generation, loaded_textures));
+                    let _ = sender.send(Message::ImagesDone(generation));
+                }
+                Err(err) => {
+                    let _ = sender.send(Message::Model(generation, Err(err)));
+                    let _ = sender.send(Message::ImagesDone(generation));
+                }
+            }
+            ctx.request_repaint();
+        });
     }
 
     pub(crate) fn open_txd_file(&mut self, path: PathBuf, ctx: &egui::Context) {
@@ -416,6 +600,8 @@ impl Browser {
             self.status = "Сначала сохраните (Ctrl+S) или закройте изменённый TXD.".into();
             return;
         }
+        self.fxp_editor = None;
+        self.animation_player = None;
         self.busy = true;
         let sender = self.sender.clone();
         let ctx = ctx.clone();
@@ -561,11 +747,7 @@ impl Browser {
         if self.archives.len() == 1 {
             let a = &self.archives[0];
             self.address = a.path().display().to_string();
-            let name = a
-                .path()
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy();
+            let name = a.path().file_name().unwrap_or_default().to_string_lossy();
             self.status = format!(
                 "{name} — {} файлов · {}",
                 theme::format_thousands(a.entries().len() as u64),

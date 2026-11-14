@@ -18,7 +18,9 @@ fn default_models_candidates() -> Vec<PathBuf> {
     ];
     for drive in b'C'..=b'Z' {
         let letter = char::from(drive);
-        candidates.push(PathBuf::from(format!(r"{letter}:\Province Games\bin\models")));
+        candidates.push(PathBuf::from(format!(
+            r"{letter}:\Province Games\bin\models"
+        )));
         candidates.push(PathBuf::from(format!(r"{letter}:\Province\bin\models")));
     }
     if let Ok(exe) = std::env::current_exe()
@@ -55,6 +57,11 @@ fn candidates_dir(candidates: &[PathBuf]) -> Option<PathBuf> {
 }
 
 pub(crate) fn remember_folder(path: &std::path::Path) {
+    #[cfg(debug_assertions)]
+    if std::env::var_os("OPENPROVINCE_CAPTURE").is_some() {
+        return;
+    }
+
     if !path.is_dir() || path.starts_with(std::env::temp_dir()) {
         return;
     }
@@ -68,9 +75,12 @@ pub(crate) fn remember_folder(path: &std::path::Path) {
 
 pub(crate) fn install_system_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    if let Some(ui_font) = ["C:/Windows/Fonts/SegUIVar.ttf", "C:/Windows/Fonts/segoeui.ttf"]
-        .iter()
-        .find_map(|p| std::fs::read(p).ok())
+    if let Some(ui_font) = [
+        "C:/Windows/Fonts/SegUIVar.ttf",
+        "C:/Windows/Fonts/segoeui.ttf",
+    ]
+    .iter()
+    .find_map(|p| std::fs::read(p).ok())
     {
         fonts
             .font_data
@@ -88,9 +98,10 @@ pub(crate) fn install_system_fonts(ctx: &egui::Context) {
     .iter()
     .find_map(|p| std::fs::read(p).ok())
     {
-        fonts
-            .font_data
-            .insert("mono".into(), Arc::new(egui::FontData::from_owned(mono_font)));
+        fonts.font_data.insert(
+            "mono".into(),
+            Arc::new(egui::FontData::from_owned(mono_font)),
+        );
         fonts
             .families
             .entry(egui::FontFamily::Monospace)

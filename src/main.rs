@@ -2,7 +2,11 @@
 
 mod actions;
 mod dff;
+mod fxp;
+#[cfg(feature = "mods")]
+mod game_launch;
 mod gpu;
+mod ifp;
 mod platform;
 mod preview;
 mod storage;
@@ -12,6 +16,8 @@ mod txd;
 mod txd_document;
 mod ui;
 mod vinyls;
+#[cfg(debug_assertions)]
+mod visual_check;
 
 use eframe::egui;
 use province_archive::{Archive, Edit};
@@ -24,6 +30,13 @@ use std::{
 pub(crate) struct EntryRef {
     pub archive: usize,
     pub index: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum AppMode {
+    Archives,
+    #[cfg(feature = "mods")]
+    Mods,
 }
 
 enum Message {
@@ -47,6 +60,9 @@ enum Message {
 }
 
 pub(crate) struct Browser {
+    pub(crate) mode: AppMode,
+    #[cfg(feature = "mods")]
+    pub(crate) mod_manager: ui::mods_panel::ModManagerState,
     folder: PathBuf,
     folder_files: Vec<ui::File>,
     address: String,
@@ -59,6 +75,10 @@ pub(crate) struct Browser {
     all_tabs: bool,
     group_by_archive: bool,
     standalone_txd: Option<PathBuf>,
+    #[cfg(feature = "mods")]
+    pub(crate) custom_mta_exe: Option<PathBuf>,
+    #[cfg(feature = "mods")]
+    pub(crate) game_session: game_launch::Session,
     filter: String,
     selected: Option<EntryRef>,
     preview: String,
@@ -80,6 +100,8 @@ pub(crate) struct Browser {
     model: Option<dff::View>,
     model_error: String,
     txd_editor: Option<texture_editor::Editor>,
+    pub(crate) fxp_editor: Option<fxp::FxpEditor>,
+    pub(crate) animation_player: Option<ifp::AnimationPlayer>,
     player_skin_mode: bool,
     loading_model: bool,
     loading_textures: bool,
@@ -112,8 +134,14 @@ pub(crate) struct Browser {
 impl Browser {
     fn new() -> Self {
         let (sender, receiver) = mpsc::channel();
+        let folder = platform::initial_folder();
+        #[cfg(feature = "mods")]
+        let mod_manager = ui::mods_panel::ModManagerState::new(&folder);
         Self {
-            folder: platform::initial_folder(),
+            mode: AppMode::Archives,
+            #[cfg(feature = "mods")]
+            mod_manager,
+            folder,
             folder_files: Vec::new(),
             address: String::new(),
             preview_open: true,
@@ -125,6 +153,10 @@ impl Browser {
             all_tabs: false,
             group_by_archive: true,
             standalone_txd: None,
+            #[cfg(feature = "mods")]
+            custom_mta_exe: None,
+            #[cfg(feature = "mods")]
+            game_session: game_launch::Session::default(),
             filter: String::new(),
             selected: None,
             preview: String::new(),
@@ -146,6 +178,8 @@ impl Browser {
             model: None,
             model_error: String::new(),
             txd_editor: None,
+            fxp_editor: None,
+            animation_player: None,
             player_skin_mode: false,
             loading_model: false,
             loading_textures: false,
@@ -179,6 +213,12 @@ impl Browser {
 
 impl eframe::App for Browser {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+        #[cfg(feature = "mods")]
+        {
+            self.game_session
+                .refresh(self.find_mta_exe(), &self.mod_manager._game_root);
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
         if !self.native_chrome_applied {
             #[cfg(windows)]
             platform::apply_native_titlebar_theme();
@@ -395,6 +435,8 @@ impl eframe::App for Browser {
                                 platform::remember_folder(&self.folder);
                             }
                             self.standalone_txd = Some(path.clone());
+                            self.fxp_editor = None;
+                            self.animation_player = None;
                             self.model = None;
                             self.loading_model = false;
                             self.loading_textures = false;
@@ -409,8 +451,10 @@ impl eframe::App for Browser {
                             self.vinyl_texture = None;
                             self.preview_open = true;
                             self.preview = platform::format_hex_report(&name, &bytes);
-                            self.txd_editor =
-                                Some(texture_editor::Editor::new_standalone(document, path.clone()));
+                            self.txd_editor = Some(texture_editor::Editor::new_standalone(
+                                document,
+                                path.clone(),
+                            ));
                             self.status = format!(
                                 "{name} — {count} текстур · {}",
                                 theme::format_size(bytes.len() as u64)
@@ -506,6 +550,11 @@ impl eframe::App for Browser {
 }
 
 fn main() -> eframe::Result<()> {
+    #[cfg(feature = "mods")]
+    if game_launch::handle_stop_request() {
+        return Ok(());
+    }
+
     let mut args = std::env::args().skip(1);
     let mut initial_archives = Vec::new();
     let mut selected = None;
@@ -559,6 +608,14 @@ fn main() -> eframe::Result<()> {
             }
             if let Some(txd_path) = txd {
                 browser.open_txd_file(txd_path, &creation.egui_ctx);
+            }
+            #[cfg(debug_assertions)]
+            if let Ok(output) = std::env::var("OPENPROVINCE_CAPTURE") {
+                return Ok(Box::new(visual_check::Capture::new(
+                    browser,
+                    output,
+                    &creation.egui_ctx,
+                )));
             }
             Ok(Box::new(browser))
         }),

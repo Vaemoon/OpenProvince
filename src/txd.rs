@@ -106,7 +106,7 @@ fn decode_dds_compressed(
 }
 
 pub(crate) fn decode(data: &[u8]) -> Option<Texture> {
-    if word(data, 0)? != 9 || data.len() < 92 {
+    if !matches!(word(data, 0)?, 8 | 9) || data.len() < 92 {
         return None;
     }
     let width = u16::from_le_bytes(data[80..82].try_into().ok()?) as usize;
@@ -121,11 +121,26 @@ pub(crate) fn decode(data: &[u8]) -> Option<Texture> {
         .to_owned();
     let format = word(data, 76)?;
     let raster = word(data, 72)?;
+    let compression = data.get(87).copied().unwrap_or(0);
     let dxt1 = u32::from_le_bytes(*b"DXT1");
     let dxt2 = u32::from_le_bytes(*b"DXT2");
     let dxt3 = u32::from_le_bytes(*b"DXT3");
     let dxt4 = u32::from_le_bytes(*b"DXT4");
     let dxt5 = u32::from_le_bytes(*b"DXT5");
+
+    let is_dxt = [dxt1, dxt2, dxt3, dxt4, dxt5].contains(&format) || (1..=5).contains(&compression);
+    let dxt_fourcc = if [dxt1, dxt2, dxt3, dxt4, dxt5].contains(&format) {
+        format
+    } else {
+        match compression {
+            1 => dxt1,
+            2 => dxt2,
+            3 => dxt3,
+            4 => dxt4,
+            5 => dxt5,
+            _ => 0,
+        }
+    };
 
     let rgba = if raster & 0x2000 != 0 {
         let palette = data.get(88..88 + 1024)?;
@@ -160,16 +175,16 @@ pub(crate) fn decode(data: &[u8]) -> Option<Texture> {
     } else {
         let size = word(data, 88)? as usize;
         let bytes = data.get(92..92usize.checked_add(size)?)?;
-        if [dxt1, dxt2, dxt3, dxt4, dxt5].contains(&format) {
-            let mapped = if format == dxt2 {
+        if is_dxt {
+            let mapped = if dxt_fourcc == dxt2 {
                 dxt3
-            } else if format == dxt4 {
+            } else if dxt_fourcc == dxt4 {
                 dxt5
             } else {
-                format
+                dxt_fourcc
             };
             let mut out = decode_dds_compressed(mapped, width, height, bytes)?;
-            if format == dxt2 || format == dxt4 {
+            if dxt_fourcc == dxt2 || dxt_fourcc == dxt4 {
                 for pixel in out.as_chunks_mut::<4>().0 {
                     let a = u16::from(pixel[3]);
                     if a > 0 && a < 255 {

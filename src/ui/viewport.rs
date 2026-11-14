@@ -18,10 +18,29 @@ impl Browser {
             None
         } else {
             self.selected.and_then(|sel| {
-                self.archives
-                    .get(sel.archive)
-                    .and_then(|a| a.entries().get(sel.index))
-                    .map(|e| (sel, e.name.clone(), e.size, self.archive_label(sel.archive)))
+                if let Some(a) = self.archives.get(sel.archive) {
+                    a.entries()
+                        .get(sel.index)
+                        .map(|e| (sel, e.name.clone(), e.size, self.archive_label(sel.archive)))
+                } else if let Some(file) = self.folder_files.get(sel.index) {
+                    let name = file
+                        .path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("файл")
+                        .to_owned();
+                    let size = std::fs::metadata(&file.path).map(|m| m.len()).unwrap_or(0);
+                    let label = file
+                        .path
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("Папка")
+                        .to_owned();
+                    Some((sel, name, size, label))
+                } else {
+                    None
+                }
             })
         };
         let paired = selected_entry
@@ -30,6 +49,7 @@ impl Browser {
         let mut jump_to = None;
         let mut trigger_save = false;
         let mut close_standalone = false;
+        let has_selected_entry = selected_entry.is_some();
 
         egui::CentralPanel::default()
             .frame(
@@ -38,6 +58,9 @@ impl Browser {
                     .inner_margin(Margin::same(10)),
             )
             .show(ctx, |ui| {
+                ui.painter()
+                    .rect_filled(ui.max_rect(), egui::CornerRadius::ZERO, theme::BG_PANEL);
+                ui.expand_to_include_rect(ui.max_rect());
                 let mut chosen_variant = self.variant_selected;
                 if let Some((path, name, dirty)) = standalone {
                     let parent_hint = path
@@ -128,10 +151,7 @@ impl Browser {
                         .next()
                         .unwrap_or_default()
                         .to_ascii_uppercase();
-                    let meta_full = format!(
-                        "{arch_label} · {}",
-                        theme::format_size(entry_size)
-                    );
+                    let meta_full = format!("{arch_label} · {}", theme::format_size(entry_size));
                     let seg_w = 148.0;
                     let paired_w = paired.as_ref().map_or(0.0, |(_, paired_name)| {
                         let text_w = ui
@@ -163,8 +183,11 @@ impl Browser {
                                 )
                                 .on_hover_text(&entry_name);
                                 if let Some((tag, color)) = edit_tag {
-                                    let text =
-                                        if tag == "ЗАМ" { "изменён" } else { "удаляется" };
+                                    let text = if tag == "ЗАМ" {
+                                        "изменён"
+                                    } else {
+                                        "удаляется"
+                                    };
                                     ui.label(egui::RichText::new(text).size(11.5).color(color));
                                 }
                                 ui.add(
@@ -205,14 +228,79 @@ impl Browser {
                     ui.add_space(4.0);
                     theme::hline(ui);
                     ui.add_space(4.0);
+                } else if let Some(fxp) = &self.fxp_editor {
+                    let name = fxp
+                        .doc
+                        .path
+                        .as_ref()
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("effects.fxp");
+                    let parent_hint = fxp
+                        .doc
+                        .path
+                        .as_ref()
+                        .and_then(|p| p.parent())
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("Редактор FXP");
+                    let dirty = fxp.doc.dirty;
+                    let close_w = theme::CONTROL_H + 6.0;
+                    let left_w = (ui.available_width() - close_w - 8.0).max(80.0);
+                    ui.horizontal(|ui| {
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(left_w, theme::CONTROL_H),
+                            egui::Layout::left_to_right(Align::Center),
+                            |ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                file_icon(ui, false, "FXP");
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(name).size(14.0).strong())
+                                        .truncate(),
+                                );
+                                if dirty {
+                                    ui.label(
+                                        egui::RichText::new("изменён")
+                                            .size(11.5)
+                                            .color(theme::STATUS_MODIFIED),
+                                    );
+                                }
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(format!("· {parent_hint}"))
+                                            .size(12.0)
+                                            .color(theme::TEXT_SECONDARY),
+                                    )
+                                    .truncate(),
+                                );
+                            },
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                            if theme::icon_button(
+                                ui,
+                                theme::Icon::Close,
+                                "Закрыть FXP (Ctrl+W)",
+                                !self.busy,
+                            )
+                            .clicked()
+                            {
+                                close_standalone = true;
+                            }
+                        });
+                    });
+                    ui.add_space(4.0);
+                    theme::hline(ui);
+                    ui.add_space(4.0);
                 } else {
                     let avail = ui.available_rect_before_wrap();
                     let box_w = 420.0_f32.min(avail.width().max(180.0));
-                    let box_h = if self.archives.is_empty() { 112.0 } else { 36.0 };
-                    let center_rect = egui::Rect::from_center_size(
-                        avail.center(),
-                        Vec2::new(box_w, box_h),
-                    );
+                    let box_h = if self.archives.is_empty() {
+                        112.0
+                    } else {
+                        36.0
+                    };
+                    let center_rect =
+                        egui::Rect::from_center_size(avail.center(), Vec2::new(box_w, box_h));
                     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(center_rect), |ui| {
                         ui.vertical_centered(|ui| {
                             if self.archives.is_empty() {
@@ -296,6 +384,13 @@ impl Browser {
                             || self.edited_archive == Some(editor.target.archive));
                     editor.show(ui, can_edit);
                 } else if self.model.is_some() {
+                    if let Some(player) = &mut self.animation_player {
+                        player.advance(ctx.input(|i| i.stable_dt));
+                        player.ui(ui);
+                        ui.add_space(4.0);
+                        theme::hline(ui);
+                        ui.add_space(4.0);
+                    }
                     if self.vinyl_capable {
                         self.ensure_vinyls();
                     }
@@ -322,29 +417,33 @@ impl Browser {
                         vinyl_handle.as_ref(),
                         vinyl_on_primary,
                         |ui| {
-                            theme::panel_menu(ui, format!("Текстуры ({})", images.len()), |ui| {
-                                if ui
-                                    .button("Подключить внешний .txd…")
-                                    .on_hover_text("Наложить словарь для предпросмотра")
-                                    .clicked()
-                                {
-                                    load_external_txd = true;
-                                    ui.close_menu();
-                                }
-                                ui.separator();
-                                egui::ScrollArea::vertical()
-                                    .max_height(240.0)
-                                    .show(ui, |ui| {
-                                        for (name, handle) in images {
-                                            ui.label(format!(
-                                                "{}   {} × {}",
-                                                name,
-                                                handle.size()[0],
-                                                handle.size()[1]
-                                            ));
-                                        }
-                                    });
-                            });
+                            theme::panel_menu(
+                                ui,
+                                format!("Текстуры ({})", images.len()),
+                                |ui| {
+                                    if ui
+                                        .button("Подключить внешний .txd…")
+                                        .on_hover_text("Наложить словарь для предпросмотра")
+                                        .clicked()
+                                    {
+                                        load_external_txd = true;
+                                        ui.close_menu();
+                                    }
+                                    ui.separator();
+                                    egui::ScrollArea::vertical()
+                                        .max_height(240.0)
+                                        .show(ui, |ui| {
+                                            for (name, handle) in images {
+                                                ui.label(format!(
+                                                    "{}   {} × {}",
+                                                    name,
+                                                    handle.size()[0],
+                                                    handle.size()[1]
+                                                ));
+                                            }
+                                        });
+                                },
+                            );
 
                             if !variants.is_empty() {
                                 let prefix = if player_skin_mode {
@@ -514,6 +613,9 @@ impl Browser {
                             );
                         });
                     });
+                } else if !has_selected_entry && self.fxp_editor.is_some() {
+                    let fxp = self.fxp_editor.as_mut().expect("checked");
+                    fxp.show(ui, ctx);
                 } else {
                     ui.monospace(if self.preview.is_empty() {
                         "Выберите DFF или TXD в списке ресурсов."

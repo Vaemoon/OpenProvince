@@ -1,5 +1,7 @@
-﻿mod browser_panel;
+mod browser_panel;
 mod chrome;
+#[cfg(feature = "mods")]
+pub(crate) mod mods_panel;
 mod viewport;
 
 use crate::{Browser, Edit, EntryRef, Message, theme};
@@ -60,11 +62,11 @@ pub(super) enum Command {
 impl Browser {
     pub(super) fn browse(&mut self, path: PathBuf, ctx: &egui::Context) {
         if !self.edits.is_empty() {
-            self.status = "РЎРЅР°С‡Р°Р»Р° СЃРѕС…СЂР°РЅРёС‚Рµ РёР»Рё РѕС‚РјРµРЅРёС‚Рµ РёР·РјРµРЅРµРЅРёСЏ Р°СЂС…РёРІР°.".into();
+            self.status = "Сначала сохраните или отмените изменения архива.".into();
             return;
         }
         if self.txd_editor.as_ref().is_some_and(|e| e.disk_dirty) {
-            self.status = "РЎРЅР°С‡Р°Р»Р° СЃРѕС…СЂР°РЅРёС‚Рµ РёР»Рё Р·Р°РєСЂРѕР№С‚Рµ РёР·РјРµРЅС‘РЅРЅС‹Р№ TXD.".into();
+            self.status = "Сначала сохраните или закройте изменённый TXD.".into();
             return;
         }
         self.standalone_txd = None;
@@ -92,31 +94,38 @@ impl Browser {
 
     pub(super) fn close_standalone_txd(&mut self) {
         if self.txd_editor.as_ref().is_some_and(|e| e.disk_dirty) {
-            self.status = "РќРµР»СЊР·СЏ Р·Р°РєСЂС‹С‚СЊ TXD СЃ РЅРµСЃРѕС…СЂР°РЅС‘РЅРЅС‹РјРё РїСЂР°РІРєР°РјРё (Ctrl+S).".into();
+            self.status = "Нельзя закрыть TXD с несохранёнными правками (Ctrl+S).".into();
             return;
         }
         self.standalone_txd = None;
-        if self.txd_editor.as_ref().is_some_and(|e| e.disk_path.is_some()) {
+        self.fxp_editor = None;
+        self.animation_player = None;
+        self.model = None;
+        if self
+            .txd_editor
+            .as_ref()
+            .is_some_and(|e| e.disk_path.is_some())
+        {
             self.txd_editor = None;
             self.preview.clear();
         }
         if let Some(sel) = self.selected
             && !self.archives.is_empty()
         {
-            self.status = format!("Р’С‹Р±СЂР°РЅР° РІРєР»Р°РґРєР°: {}", self.archive_label(sel.archive));
+            self.status = format!("Выбрана вкладка: {}", self.archive_label(sel.archive));
         }
     }
 
     pub(super) fn command(&mut self, command: Command, ctx: &egui::Context) {
         if self.busy || self.txd_editor.as_ref().is_some_and(|e| e.busy) {
-            self.status = "Р”РѕР¶РґРёС‚РµСЃСЊ Р·Р°РІРµСЂС€РµРЅРёСЏ С‚РµРєСѓС‰РµР№ РѕРїРµСЂР°С†РёРё.".into();
+            self.status = "Дождитесь завершения текущей операции.".into();
             return;
         }
         match command {
             Command::Open => {
                 if let Some(paths) = rfd::FileDialog::new()
-                    .add_filter("IMG Рё TXD СЂРµСЃСѓСЂСЃС‹", &["img", "txd"])
-                    .add_filter("IMG Р°СЂС…РёРІС‹", &["img"])
+                    .add_filter("IMG и TXD ресурсы", &["img", "txd"])
+                    .add_filter("IMG-архивы (*.img)", &["img"])
                     .add_filter("RenderWare TXD", &["txd"])
                     .set_directory(&self.folder)
                     .pick_files()
@@ -138,7 +147,7 @@ impl Browser {
             }
             Command::AddArchive => {
                 if let Some(paths) = rfd::FileDialog::new()
-                    .add_filter("IMG Р°СЂС…РёРІС‹", &["img"])
+                    .add_filter("IMG-архивы (*.img)", &["img"])
                     .set_directory(&self.folder)
                     .pick_files()
                 {
@@ -157,7 +166,7 @@ impl Browser {
                 if self.edits.is_empty() {
                     self.pack(ctx)
                 } else {
-                    self.status = "РЎРЅР°С‡Р°Р»Р° СЃРѕС…СЂР°РЅРёС‚Рµ РёР·РјРµРЅРµРЅРёСЏ.".into();
+                    self.status = "Сначала сохраните изменения.".into();
                 }
             }
             Command::Add => {
@@ -185,7 +194,7 @@ impl Browser {
                         });
                     } else {
                         self.status =
-                            "РЎРѕС…СЂР°РЅРёС‚Рµ РёР·РјРµРЅРµРЅРёСЏ С‚РµРєСѓС‰РµРіРѕ Р°СЂС…РёРІР° РїРµСЂРµРґ РїСЂР°РІРєРѕР№ РґСЂСѓРіРѕРіРѕ.".into();
+                            "Сохраните изменения текущего архива перед правкой другого.".into();
                     }
                 }
             }
@@ -199,7 +208,7 @@ impl Browser {
                         || self.selection.iter().any(|r| r.archive != arch)
                     {
                         self.status =
-                            "РЈРґР°Р»РµРЅРёРµ РІС‹РїРѕР»РЅСЏРµС‚СЃСЏ РІ РїСЂРµРґРµР»Р°С… РѕРґРЅРѕРіРѕ Р°СЂС…РёРІР° Р·Р° СЂР°Р·.".into();
+                            "Удаление вС‹полняется в пределах одного архива за раз.".into();
                         return;
                     }
                     let names: Vec<_> = self
@@ -249,15 +258,16 @@ impl Browser {
                             self.browse(path, ctx)
                         } else if path
                             .extension()
-                            .is_some_and(|e| {
-                                e.eq_ignore_ascii_case("img") || e.eq_ignore_ascii_case("txd")
-                            })
+                            .is_some_and(|e| e.eq_ignore_ascii_case("dff"))
                         {
+                            self.preview_open = true;
+                            self.load_standalone_dff(path, ctx);
+                        } else if path.extension().is_some_and(|e| {
+                            e.eq_ignore_ascii_case("img") || e.eq_ignore_ascii_case("txd")
+                        }) {
                             self.open(path, ctx);
                         } else {
-                            self.status =
-                                "РћС‚РєСЂРѕР№С‚Рµ IMG-Р°СЂС…РёРІ РёР»Рё TXD-СЃР»РѕРІР°СЂСЊ, С‡С‚РѕР±С‹ РїСЂРѕСЃРјРѕС‚СЂРµС‚СЊ СЂРµСЃСѓСЂСЃС‹."
-                                    .into();
+                            self.status = "Откройте IMG-архив, TXD-словарь или DFF-модель.".into();
                         }
                     }
                 }
@@ -277,7 +287,7 @@ impl Browser {
                     let total = archive.entries().len();
                     for (i, e) in archive.entries().iter().enumerate() {
                         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                            let _ = sender.send(Message::Status("РџСЂРѕРІРµСЂРєР° РѕС‚РјРµРЅРµРЅР°.".into()));
+                            let _ = sender.send(Message::Status("Проверка отменена.".into()));
                             ctx.request_repaint();
                             return;
                         }
@@ -296,10 +306,10 @@ impl Browser {
                         }
                     }
                     let message = if warnings.is_empty() {
-                        format!("РџСЂРѕРІРµСЂРµРЅРѕ {total} С„Р°Р№Р»РѕРІ. РћС€РёР±РѕРє СЃС‚СЂСѓРєС‚СѓСЂС‹ РЅРµ РЅР°Р№РґРµРЅРѕ.")
+                        format!("Проверено {total} файлов. Ошибок структуры не найдено.")
                     } else {
                         format!(
-                            "РџСЂРѕРІРµСЂРµРЅРѕ {total} С„Р°Р№Р»РѕРІ; РїСЂРµРґСѓРїСЂРµР¶РґРµРЅРёР№: {}. {}",
+                            "Проверено {total} файлов; предупреждений: {}. {}",
                             warnings.len(),
                             warnings
                                 .iter()
@@ -374,10 +384,10 @@ impl Browser {
         }
         self.edits.iter().rev().find_map(|edit| match edit {
             Edit::Replace { name: target, .. } if target.eq_ignore_ascii_case(name) => {
-                Some(("Р—РђРњ", theme::STATUS_MODIFIED))
+                Some(("ЗАМ", theme::STATUS_MODIFIED))
             }
             Edit::Remove { name: target } if target.eq_ignore_ascii_case(name) => {
-                Some(("РЈР”РђР›", theme::STATUS_REMOVED))
+                Some(("УДАЛ", theme::STATUS_REMOVED))
             }
             _ => None,
         })
@@ -526,7 +536,7 @@ impl Browser {
                             .to_string_lossy()
                             .into_owned(),
                         kind: if f.directory {
-                            "РџР°РїРєР°".into()
+                            "Папка".into()
                         } else {
                             f.path
                                 .extension()
@@ -645,17 +655,30 @@ impl Browser {
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.status =
-                "Р•СЃС‚СЊ РЅРµСЃРѕС…СЂР°РЅС‘РЅРЅС‹Рµ РёР·РјРµРЅРµРЅРёСЏ: РЅР°Р¶РјРёС‚Рµ В«РЎРѕС…СЂР°РЅРёС‚СЊВ» РёР»Рё В«РћС‚РјРµРЅРёС‚СЊ РёР·РјРµРЅРµРЅРёСЏВ»."
+                "Есть несохранённые изменения: нажмите «Сохранить» или «Отменить изменения»."
                     .into();
         }
+        ctx.layer_painter(egui::LayerId::background()).rect_filled(
+            ctx.screen_rect(),
+            egui::CornerRadius::ZERO,
+            theme::BG_PANEL,
+        );
         let mut menu_jump_to = None;
         self.top_chrome_ui(ctx, &mut command, &mut menu_jump_to);
         self.status_and_dialogs_ui(ctx, &mut command);
-        self.browser_panel_ui(ctx, &mut command, menu_jump_to);
-        if let Some(command) = command {
-            self.command(command, ctx);
+        match self.mode {
+            crate::AppMode::Archives => {
+                self.browser_panel_ui(ctx, &mut command, menu_jump_to);
+                if let Some(command) = command {
+                    self.command(command, ctx);
+                }
+                self.preview_ui(ctx);
+            }
+            #[cfg(feature = "mods")]
+            crate::AppMode::Mods => {
+                self.mods_panel_ui(ctx);
+            }
         }
-        self.preview_ui(ctx);
         self.dialogs_ui(ctx);
     }
 }
@@ -670,39 +693,24 @@ pub(super) fn search_field(
         .inner_margin(Margin::symmetric(8, 6))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                let clear_width = theme::CONTROL_H + 6.0;
-                let grouping_width = if multiple { 66.0 } else { 0.0 };
-                let response = ui.add_sized(
-                    [
-                        (ui.available_width() - clear_width - grouping_width - 8.0).max(80.0),
-                        theme::CONTROL_H,
-                    ],
-                    egui::TextEdit::singleline(filter)
-                        .id_salt("archive_search")
-                        .hint_text(if multiple {
-                            "РџРѕРёСЃРє РїРѕ РІСЃРµРј РІРєР»Р°РґРєР°РјвЂ¦ (Ctrl+F)"
-                        } else {
-                            "РџРѕРёСЃРє СЂРµСЃСѓСЂСЃР°вЂ¦ (Ctrl+F)"
-                        }),
-                );
-                if theme::icon_button(
+                let grouping_width = if multiple { 72.0 } else { 0.0 };
+                let response = theme::search_input(
                     ui,
-                    theme::Icon::Close,
-                    "РћС‡РёСЃС‚РёС‚СЊ РїРѕРёСЃРє (Esc)",
-                    !filter.is_empty(),
-                )
-                .clicked()
-                {
-                    filter.clear();
-                    response.request_focus();
-                    ui.ctx().request_repaint();
-                }
+                    filter,
+                    "archive_search",
+                    if multiple {
+                        "Поиск по всем вкладкам… (Ctrl+F)"
+                    } else {
+                        "Поиск ресурса… (Ctrl+F)"
+                    },
+                    (ui.available_width() - grouping_width).max(120.0),
+                );
                 if response.changed() {
                     ui.ctx().request_repaint();
                 }
                 if multiple {
-                    theme::panel_menu(ui, "Р’РёРґ", |ui| {
-                        ui.checkbox(grouped, "Р“СЂСѓРїРїРёСЂРѕРІР°С‚СЊ РїРѕ Р°СЂС…РёРІР°Рј");
+                    theme::panel_menu(ui, "Вид", |ui| {
+                        ui.checkbox(grouped, "Группировать по архивам");
                     });
                 }
                 response

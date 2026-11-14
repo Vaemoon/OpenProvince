@@ -68,17 +68,27 @@ fn parse_map_bin_into(bytes: &[u8], catalog: &mut Catalog) {
         let Some(&kind) = bytes.get(pos) else { break };
         match kind {
             1 | 2 => {
-                let Some(name_hash) = u32_at(pos + 9) else { break };
-                let Some((txd, next)) = read_str(pos + 37) else { break };
+                let Some(name_hash) = u32_at(pos + 9) else {
+                    break;
+                };
+                let Some((txd, next)) = read_str(pos + 37) else {
+                    break;
+                };
                 if !txd.is_empty() && txd != "null" {
                     catalog.hashed_models.insert(name_hash, txd);
                 }
                 pos = next;
             }
             3 | 5 => {
-                let Some(name_hash) = u32_at(pos + 9) else { break };
-                let Some((txd, after_txd)) = read_str(pos + 41) else { break };
-                let Some((model_name, next)) = read_str(after_txd) else { break };
+                let Some(name_hash) = u32_at(pos + 9) else {
+                    break;
+                };
+                let Some((txd, after_txd)) = read_str(pos + 41) else {
+                    break;
+                };
+                let Some((model_name, next)) = read_str(after_txd) else {
+                    break;
+                };
                 if !txd.is_empty() && txd != "null" {
                     catalog.hashed_models.insert(name_hash, txd.clone());
                     if !model_name.is_empty() {
@@ -88,8 +98,12 @@ fn parse_map_bin_into(bytes: &[u8], catalog: &mut Catalog) {
                 pos = next;
             }
             6 => {
-                let Some((child, after_child)) = read_str(pos + 1) else { break };
-                let Some((parent, next)) = read_str(after_child) else { break };
+                let Some((child, after_child)) = read_str(pos + 1) else {
+                    break;
+                };
+                let Some((parent, next)) = read_str(after_child) else {
+                    break;
+                };
                 if !child.is_empty() && !parent.is_empty() {
                     catalog.parents.push((child, parent));
                 }
@@ -315,7 +329,11 @@ pub fn catalog_for_path(start: &Path) -> Arc<Catalog> {
         }
     }
     for root in &roots {
-        for rel in ["data/map.bin", "unpacked/data/map.bin", "decoded_data/map.bin.bin"] {
+        for rel in [
+            "data/map.bin",
+            "unpacked/data/map.bin",
+            "decoded_data/map.bin.bin",
+        ] {
             let path = root.join(rel);
             if let Ok(bytes) = std::fs::read(&path) {
                 let decoded = profile.decode_file(&path, &bytes);

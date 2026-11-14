@@ -23,17 +23,17 @@ impl Browser {
             .default_width(540.0)
             .min_width(380.0)
             .max_width(960.0)
+            .show_separator_line(true)
             .frame(
                 egui::Frame::new()
                     .fill(theme::BG_PANEL)
-                    .inner_margin(Margin {
-                        left: 0,
-                        right: 6,
-                        top: 0,
-                        bottom: 0,
-                    }),
+                    .inner_margin(Margin::ZERO),
             )
             .show(ctx, |ui| {
+                ui.painter()
+                    .rect_filled(ui.max_rect(), egui::CornerRadius::ZERO, theme::BG_PANEL);
+                ui.set_min_width(ui.available_width());
+                ui.expand_to_include_rect(ui.max_rect());
                 let search_resp = search_field(
                     ui,
                     &mut self.filter,
@@ -233,28 +233,26 @@ impl Browser {
                     .header(theme::HEADER_H, |mut header| {
                         for &(label, col_id) in &cols {
                             header.col(|ui| {
-                                let title = if col_id < 10 && self.sort == col_id {
-                                    if self.descending {
-                                        format!("{label} ▼")
-                                    } else {
-                                        format!("{label} ▲")
-                                    }
-                                } else {
-                                    label.to_owned()
-                                };
-                                let btn_fn = |ui: &mut egui::Ui| {
-                                    let resp = ui.add(
-                                        egui::Button::new(
-                                            egui::RichText::new(title).size(12.0).color(
-                                                if self.sort == col_id {
-                                                    theme::TEXT_PRIMARY
-                                                } else {
-                                                    theme::TEXT_SECONDARY
-                                                },
-                                            ),
+                                let mut btn_fn = |ui: &mut egui::Ui| {
+                                    let text = egui::RichText::new(label).size(12.0).color(
+                                        if self.sort == col_id {
+                                            theme::TEXT_PRIMARY
+                                        } else {
+                                            theme::TEXT_SECONDARY
+                                        },
+                                    );
+                                    let button = if self.sort == col_id {
+                                        egui::Button::image_and_text(
+                                            theme::direction_icon(!self.descending),
+                                            text,
                                         )
-                                        .frame(false)
-                                        .min_size(Vec2::new(0.0, theme::HEADER_H)),
+                                    } else {
+                                        egui::Button::new(text)
+                                    };
+                                    let resp = ui.add(
+                                        button
+                                            .frame(false)
+                                            .min_size(Vec2::new(0.0, theme::HEADER_H)),
                                     );
                                     if resp.clicked() && col_id < 10 {
                                         if self.sort == col_id {
@@ -297,149 +295,160 @@ impl Browser {
                             });
                             return;
                         }
-                        body.rows(theme::ROW_H, rows.len(), |mut row| match &rows[row.index()] {
-                            RowItem::Section { title, count } => {
-                                row.col(|ui| {
-                                    theme::section_bar(ui, title, *count);
-                                });
-                                for _ in 0..if multi { 3 } else { 2 } {
+                        body.rows(theme::ROW_H, rows.len(), |mut row| {
+                            match &rows[row.index()] {
+                                RowItem::Section { title, count } => {
                                     row.col(|ui| {
-                                        theme::section_bar_fill(ui);
+                                        theme::section_bar(ui, title, *count);
                                     });
+                                    for _ in 0..if multi { 3 } else { 2 } {
+                                        row.col(|ui| {
+                                            theme::section_bar_fill(ui);
+                                        });
+                                    }
                                 }
-                            }
-                            RowItem::Entry(item) => {
-                                let is_selected = self.selection.contains(&item.target);
-                                row.set_selected(is_selected);
-                                let edit_tag = self.pending_edit_tag(item.archive_idx, &item.name);
-                                row.col(|ui| {
-                                    ui.add_space(6.0);
-                                    file_icon(ui, item.directory, &item.kind);
-                                    let name_color = if let Some((_, color)) = edit_tag {
-                                        color
-                                    } else if is_selected {
-                                        Color32::WHITE
-                                    } else {
-                                        theme::TEXT_PRIMARY
-                                    };
-                                    let label_resp = ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(&item.name).color(name_color),
-                                        )
-                                        .truncate(),
-                                    );
-                                    if item.name.len() > 22 {
-                                        label_resp.on_hover_text(&item.name);
-                                    }
-                                    if let Some((tag, color)) = edit_tag {
-                                        let suffix = if tag == "ЗАМ" { "[зам]" } else { "[удал]" };
-                                        ui.label(egui::RichText::new(suffix).size(11.0).color(color));
-                                    }
-                                });
-                                if multi {
+                                RowItem::Entry(item) => {
+                                    let is_selected = self.selection.contains(&item.target);
+                                    row.set_selected(is_selected);
+                                    let edit_tag =
+                                        self.pending_edit_tag(item.archive_idx, &item.name);
                                     row.col(|ui| {
-                                        ui.add(
+                                        ui.add_space(6.0);
+                                        file_icon(ui, item.directory, &item.kind);
+                                        let name_color = if let Some((_, color)) = edit_tag {
+                                            color
+                                        } else if is_selected {
+                                            Color32::WHITE
+                                        } else {
+                                            theme::TEXT_PRIMARY
+                                        };
+                                        let label_resp = ui.add(
                                             egui::Label::new(
-                                                egui::RichText::new(&item.archive_stem)
-                                                    .size(12.0)
-                                                    .color(theme::TEXT_SECONDARY),
+                                                egui::RichText::new(&item.name).color(name_color),
                                             )
                                             .truncate(),
-                                        )
-                                        .on_hover_text(self.archive_label(item.archive_idx));
+                                        );
+                                        if item.name.len() > 22 {
+                                            label_resp.on_hover_text(&item.name);
+                                        }
+                                        if let Some((tag, color)) = edit_tag {
+                                            let suffix = if tag == "ЗАМ" {
+                                                "[зам]"
+                                            } else {
+                                                "[удал]"
+                                            };
+                                            ui.label(
+                                                egui::RichText::new(suffix).size(11.0).color(color),
+                                            );
+                                        }
+                                    });
+                                    if multi {
+                                        row.col(|ui| {
+                                            ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(&item.archive_stem)
+                                                        .size(12.0)
+                                                        .color(theme::TEXT_SECONDARY),
+                                                )
+                                                .truncate(),
+                                            )
+                                            .on_hover_text(self.archive_label(item.archive_idx));
+                                        });
+                                    }
+                                    row.col(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(if item.directory {
+                                                "Папка"
+                                            } else {
+                                                &item.kind
+                                            })
+                                            .size(11.5)
+                                            .color(theme::TEXT_SECONDARY),
+                                        );
+                                    });
+                                    row.col(|ui| {
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(Align::Center),
+                                            |ui| {
+                                                ui.add_space(12.0);
+                                                if !item.directory {
+                                                    ui.label(
+                                                        egui::RichText::new(theme::format_size(
+                                                            item.size,
+                                                        ))
+                                                        .size(12.0)
+                                                        .color(theme::TEXT_SECONDARY),
+                                                    )
+                                                    .on_hover_text(format!(
+                                                        "{} Б",
+                                                        theme::format_thousands(item.size)
+                                                    ));
+                                                }
+                                            },
+                                        );
+                                    });
+                                    let response = row.response();
+                                    if response.clicked() || response.double_clicked() {
+                                        clicked = Some(item.target);
+                                        double = response.double_clicked();
+                                    }
+                                    let paired = self.find_paired_asset(item.target);
+                                    response.context_menu(|ui| {
+                                        if !self.selection.contains(&item.target) {
+                                            self.selection.clear();
+                                            self.selection.insert(item.target);
+                                            self.selected = Some(item.target);
+                                        }
+                                        menu(ui, "Просмотр    F3", true, Command::Preview, command);
+                                        if let Some((paired_target, paired_name)) = &paired
+                                            && ui
+                                                .button(format!("Перейти к {paired_name}"))
+                                                .clicked()
+                                        {
+                                            clicked = Some(*paired_target);
+                                            self.scroll_selection = true;
+                                            ui.close_menu();
+                                        }
+                                        if multi
+                                            && item.archive_idx != self.active_archive
+                                            && ui
+                                                .button(format!(
+                                                    "Открыть во вкладке {}",
+                                                    item.archive_stem
+                                                ))
+                                                .clicked()
+                                        {
+                                            self.active_archive = item.archive_idx;
+                                            self.all_tabs = false;
+                                            self.row_cache = None;
+                                            clicked = Some(item.target);
+                                            self.scroll_selection = true;
+                                            ui.close_menu();
+                                        }
+                                        ui.separator();
+                                        menu(
+                                            ui,
+                                            "Извлечь…    Ctrl+E",
+                                            has_archives,
+                                            Command::Extract,
+                                            command,
+                                        );
+                                        menu(
+                                            ui,
+                                            "Заменить…",
+                                            has_archives && self.selection.len() == 1,
+                                            Command::Replace,
+                                            command,
+                                        );
+                                        menu(
+                                            ui,
+                                            "Удалить    Delete",
+                                            has_archives,
+                                            Command::Remove,
+                                            command,
+                                        );
                                     });
                                 }
-                                row.col(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(if item.directory {
-                                            "Папка"
-                                        } else {
-                                            &item.kind
-                                        })
-                                        .size(11.5)
-                                        .color(theme::TEXT_SECONDARY),
-                                    );
-                                });
-                                row.col(|ui| {
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(Align::Center),
-                                        |ui| {
-                                            ui.add_space(12.0);
-                                            if !item.directory {
-                                                ui.label(
-                                                    egui::RichText::new(theme::format_size(
-                                                        item.size,
-                                                    ))
-                                                    .size(12.0)
-                                                    .color(theme::TEXT_SECONDARY),
-                                                )
-                                                .on_hover_text(format!(
-                                                    "{} Б",
-                                                    theme::format_thousands(item.size)
-                                                ));
-                                            }
-                                        },
-                                    );
-                                });
-                                let response = row.response();
-                                if response.clicked() || response.double_clicked() {
-                                    clicked = Some(item.target);
-                                    double = response.double_clicked();
-                                }
-                                let paired = self.find_paired_asset(item.target);
-                                response.context_menu(|ui| {
-                                    if !self.selection.contains(&item.target) {
-                                        self.selection.clear();
-                                        self.selection.insert(item.target);
-                                        self.selected = Some(item.target);
-                                    }
-                                    menu(ui, "Просмотр    F3", true, Command::Preview, command);
-                                    if let Some((paired_target, paired_name)) = &paired
-                                        && ui.button(format!("Перейти к {paired_name}")).clicked()
-                                    {
-                                        clicked = Some(*paired_target);
-                                        self.scroll_selection = true;
-                                        ui.close_menu();
-                                    }
-                                    if multi
-                                        && item.archive_idx != self.active_archive
-                                        && ui
-                                            .button(format!(
-                                                "Открыть во вкладке {}",
-                                                item.archive_stem
-                                            ))
-                                            .clicked()
-                                    {
-                                        self.active_archive = item.archive_idx;
-                                        self.all_tabs = false;
-                                        self.row_cache = None;
-                                        clicked = Some(item.target);
-                                        self.scroll_selection = true;
-                                        ui.close_menu();
-                                    }
-                                    ui.separator();
-                                    menu(
-                                        ui,
-                                        "Извлечь…    Ctrl+E",
-                                        has_archives,
-                                        Command::Extract,
-                                        command,
-                                    );
-                                    menu(
-                                        ui,
-                                        "Заменить…",
-                                        has_archives && self.selection.len() == 1,
-                                        Command::Replace,
-                                        command,
-                                    );
-                                    menu(
-                                        ui,
-                                        "Удалить    Delete",
-                                        has_archives,
-                                        Command::Remove,
-                                        command,
-                                    );
-                                });
                             }
                         });
                     });
@@ -574,18 +583,39 @@ impl Browser {
             self.selected = Some(target);
             if double {
                 *command = Some(Command::Preview);
-            } else if self.preview_open {
+            } else {
                 if has_archives {
-                    self.select(target, ctx);
+                    if self.preview_open {
+                        self.select(target, ctx);
+                    }
                 } else if let Some(file) = self.folder_files.get(target.index)
                     && !file.directory
-                    && file
+                {
+                    let ext = file
                         .path
                         .extension()
-                        .is_some_and(|e| e.eq_ignore_ascii_case("txd"))
-                {
-                    let path = file.path.clone();
-                    self.open_txd_file(path, ctx);
+                        .and_then(|e| e.to_str())
+                        .unwrap_or_default();
+                    if ext.eq_ignore_ascii_case("txd") {
+                        self.fxp_editor = None;
+                        self.animation_player = None;
+                        self.open_txd_file(file.path.clone(), ctx);
+                    } else if ext.eq_ignore_ascii_case("dff") {
+                        self.fxp_editor = None;
+                        self.animation_player = None;
+                        self.load_standalone_dff(file.path.clone(), ctx);
+                    } else if ext.eq_ignore_ascii_case("fxp") {
+                        self.standalone_txd = None;
+                        self.txd_editor = None;
+                        self.model = None;
+                        self.animation_player = None;
+                        self.open_fxp_file(file.path.clone(), ctx);
+                    } else if ext.eq_ignore_ascii_case("ifp") {
+                        self.fxp_editor = None;
+                        self.standalone_txd = None;
+                        self.txd_editor = None;
+                        self.open_ifp_file(file.path.clone(), ctx);
+                    }
                 }
             }
         }

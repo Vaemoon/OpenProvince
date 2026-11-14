@@ -22,6 +22,17 @@ impl Browser {
         let mut close_archive_idx = None;
         let mut close_standalone = false;
 
+        #[cfg(feature = "mods")]
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::M)) {
+            self.mode = match self.mode {
+                crate::AppMode::Archives => {
+                    self.mod_manager.reload();
+                    crate::AppMode::Mods
+                }
+                crate::AppMode::Mods => crate::AppMode::Archives,
+            };
+        }
+
         egui::TopBottomPanel::top("manager_chrome")
             .frame(
                 egui::Frame::new()
@@ -66,6 +77,24 @@ impl Browser {
                             Command::CloseActive,
                             command,
                         );
+                        #[cfg(feature = "mods")]
+                        {
+                            ui.separator();
+                            let toggle_label = match self.mode {
+                                crate::AppMode::Archives => "Модификации    Ctrl+M",
+                                crate::AppMode::Mods => "Ресурсы    Ctrl+M",
+                            };
+                            if ui.button(toggle_label).clicked() {
+                                self.mode = match self.mode {
+                                    crate::AppMode::Archives => {
+                                        self.mod_manager.reload();
+                                        crate::AppMode::Mods
+                                    }
+                                    crate::AppMode::Mods => crate::AppMode::Archives,
+                                };
+                                ui.close_menu();
+                            }
+                        }
                     });
                     ui.menu_button("Правка", |ui| {
                         menu(
@@ -94,7 +123,13 @@ impl Browser {
                             self.focus_search = true;
                             ui.close_menu();
                         }
-                        menu(ui, "Выделить всё    Ctrl+A", true, Command::SelectAll, command);
+                        menu(
+                            ui,
+                            "Выделить всё    Ctrl+A",
+                            true,
+                            Command::SelectAll,
+                            command,
+                        );
                         ui.separator();
                         menu(
                             ui,
@@ -184,7 +219,13 @@ impl Browser {
                             command,
                         );
                         ui.separator();
-                        menu(ui, "Проверить целостность", has_archives, Command::Verify, command);
+                        menu(
+                            ui,
+                            "Проверить целостность",
+                            has_archives,
+                            Command::Verify,
+                            command,
+                        );
                         if ui
                             .add_enabled(
                                 !self.edits.is_empty(),
@@ -209,110 +250,229 @@ impl Browser {
                             ui.close_menu();
                         }
                     });
+
+                    #[cfg(feature = "mods")]
+                    ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                        #[cfg(feature = "mods")]
+                        {
+                            let active_idx = match self.mode {
+                                crate::AppMode::Archives => 0,
+                                crate::AppMode::Mods => 1,
+                            };
+                            if let Some(tab) =
+                                theme::segmented_toggle(ui, &["Ресурсы", "Модификации"], active_idx)
+                            {
+                                self.mode = if tab == 0 {
+                                    crate::AppMode::Archives
+                                } else {
+                                    self.mod_manager.reload();
+                                    crate::AppMode::Mods
+                                };
+                            }
+                            ui.add_space(8.0);
+                        }
+                        #[cfg(feature = "mods")]
+                        {
+                            let count = self
+                                .mod_manager
+                                .registry
+                                .mods()
+                                .iter()
+                                .filter(|m| m.enabled)
+                                .count();
+                            let running = self.game_session.running();
+                            let enabled = running
+                                || (!self.busy && self.edits.is_empty() && !standalone_dirty);
+                            let action = ui
+                                .add_enabled_ui(enabled, |ui| {
+                                    crate::game_launch::control(
+                                        ui,
+                                        count,
+                                        running,
+                                        self.game_session.stopping(),
+                                    )
+                                })
+                                .inner;
+                            match action {
+                                crate::game_launch::Action::Play => {
+                                    self.launch_game_with_mods(true)
+                                }
+                                crate::game_launch::Action::Clean => {
+                                    self.launch_game_with_mods(false)
+                                }
+                                crate::game_launch::Action::Path => self.pick_mta_exe(),
+                                crate::game_launch::Action::Stop => self.stop_game(),
+                                crate::game_launch::Action::None => {}
+                            }
+                        }
+                    });
                 });
 
-                ui.add_space(3.0);
-                theme::hline(ui);
-                ui.add_space(4.0);
-                if has_archives {
-                    egui::ScrollArea::horizontal()
-                        .id_salt("open_archives_strip")
-                        .max_height(28.0)
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 2.0;
-                                for (ai, archive) in self.archives.iter().enumerate() {
-                                    let name = archive
-                                        .path()
-                                        .file_name()
-                                        .unwrap_or_default()
-                                        .to_string_lossy();
-                                    let active = ai == self.active_archive && !standalone_open;
-                                    let dirty =
-                                        self.edited_archive == Some(ai) && !self.edits.is_empty();
-                                    let tab_fill = if active {
-                                        theme::BG_PANEL
-                                    } else {
-                                        Color32::TRANSPARENT
-                                    };
-                                    let resp_frame = egui::Frame::new()
-                                        .fill(tab_fill)
-                                        .inner_margin(Margin::symmetric(8, 4))
-                                        .show(ui, |ui| {
-                                            ui.horizontal(|ui| {
-                                                ui.spacing_mut().item_spacing.x = 5.0;
-                                                let body = ui
-                                                    .horizontal(|ui| {
-                                                        ui.spacing_mut().item_spacing.x = 5.0;
-                                                        ui.add(
-                                                            theme::icon_sized(
-                                                                theme::Icon::Archive,
-                                                                13.0,
-                                                            )
-                                                            .tint(if active {
-                                                                theme::TEXT_PRIMARY
+                if self.mode == crate::AppMode::Archives {
+                    ui.add_space(3.0);
+                    theme::hline(ui);
+                    ui.add_space(4.0);
+                    if has_archives {
+                        egui::ScrollArea::horizontal()
+                            .id_salt("open_archives_strip")
+                            .max_height(28.0)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 2.0;
+                                    for (ai, archive) in self.archives.iter().enumerate() {
+                                        let name = archive
+                                            .path()
+                                            .file_name()
+                                            .unwrap_or_default()
+                                            .to_string_lossy();
+                                        let active = ai == self.active_archive && !standalone_open;
+                                        let dirty = self.edited_archive == Some(ai)
+                                            && !self.edits.is_empty();
+                                        let tab_fill = if active {
+                                            theme::BG_PANEL
+                                        } else {
+                                            Color32::TRANSPARENT
+                                        };
+                                        let resp_frame = egui::Frame::new()
+                                            .fill(tab_fill)
+                                            .inner_margin(Margin::symmetric(8, 4))
+                                            .show(ui, |ui| {
+                                                ui.horizontal(|ui| {
+                                                    ui.spacing_mut().item_spacing.x = 5.0;
+                                                    let body = ui
+                                                        .horizontal(|ui| {
+                                                            ui.spacing_mut().item_spacing.x = 5.0;
+                                                            ui.add(
+                                                                theme::icon_sized(
+                                                                    theme::Icon::Archive,
+                                                                    13.0,
+                                                                )
+                                                                .tint(if active {
+                                                                    theme::TEXT_PRIMARY
+                                                                } else {
+                                                                    theme::TEXT_MUTED
+                                                                }),
+                                                            );
+                                                            let title_text = if dirty {
+                                                                format!("{name} *")
                                                             } else {
-                                                                theme::TEXT_MUTED
-                                                            }),
+                                                                name.as_ref().to_owned()
+                                                            };
+                                                            let text =
+                                                                egui::RichText::new(title_text)
+                                                                    .size(12.5)
+                                                                    .color(if dirty && !active {
+                                                                        theme::STATUS_MODIFIED
+                                                                    } else if active {
+                                                                        theme::TEXT_PRIMARY
+                                                                    } else {
+                                                                        theme::TEXT_SECONDARY
+                                                                    });
+                                                            ui.add(egui::Label::new(text));
+                                                            ui.label(
+                                                                egui::RichText::new(
+                                                                    theme::format_thousands(
+                                                                        archive.entries().len()
+                                                                            as u64,
+                                                                    ),
+                                                                )
+                                                                .size(11.0)
+                                                                .color(theme::TEXT_MUTED),
+                                                            );
+                                                        })
+                                                        .response
+                                                        .interact(Sense::click())
+                                                        .on_hover_text(
+                                                            archive.path().display().to_string(),
                                                         );
-                                                        let title_text = if dirty {
-                                                            format!("{name} *")
-                                                        } else {
-                                                            name.as_ref().to_owned()
-                                                        };
-                                                        let text = egui::RichText::new(title_text)
-                                                            .size(12.5)
-                                                            .color(if dirty && !active {
-                                                                theme::STATUS_MODIFIED
-                                                            } else if active {
-                                                                theme::TEXT_PRIMARY
-                                                            } else {
-                                                                theme::TEXT_SECONDARY
-                                                            });
-                                                        ui.add(egui::Label::new(text));
-                                                        ui.label(
-                                                            egui::RichText::new(
-                                                                theme::format_thousands(
-                                                                    archive.entries().len() as u64,
-                                                                ),
+                                                    if body.clicked() && !self.busy {
+                                                        self.active_archive = ai;
+                                                        self.row_cache = None;
+                                                        if standalone_open && !standalone_dirty {
+                                                            close_standalone = true;
+                                                        }
+                                                    }
+                                                    if ui
+                                                        .add(
+                                                            egui::Button::image(
+                                                                theme::icon_sized(
+                                                                    theme::Icon::Close,
+                                                                    12.0,
+                                                                )
+                                                                .tint(theme::TEXT_MUTED),
                                                             )
-                                                            .size(11.0)
-                                                            .color(theme::TEXT_MUTED),
-                                                        );
-                                                    })
-                                                    .response
-                                                    .interact(Sense::click())
-                                                    .on_hover_text(
-                                                        archive.path().display().to_string(),
+                                                            .frame(false),
+                                                        )
+                                                        .on_hover_text(format!("Закрыть {name}"))
+                                                        .clicked()
+                                                    {
+                                                        close_archive_idx = Some(ai);
+                                                    }
+                                                });
+                                            });
+                                        if active {
+                                            let r = resp_frame.response.rect;
+                                            let accent_color = if dirty {
+                                                theme::STATUS_MODIFIED
+                                            } else {
+                                                theme::ACCENT
+                                            };
+                                            ui.painter().line_segment(
+                                                [r.left_top(), r.right_top()],
+                                                Stroke::new(2.0_f32, accent_color),
+                                            );
+                                        }
+                                    }
+                                    if let Some(txd_path) = &self.standalone_txd
+                                        && standalone_open
+                                    {
+                                        let txd_name = txd_path
+                                            .file_name()
+                                            .unwrap_or_default()
+                                            .to_string_lossy();
+                                        let title = if standalone_dirty {
+                                            format!("{txd_name} *")
+                                        } else {
+                                            txd_name.as_ref().to_owned()
+                                        };
+                                        let resp_frame = egui::Frame::new()
+                                            .fill(theme::BG_PANEL)
+                                            .inner_margin(Margin::symmetric(8, 4))
+                                            .show(ui, |ui| {
+                                                ui.horizontal(|ui| {
+                                                    ui.spacing_mut().item_spacing.x = 5.0;
+                                                    ui.add(
+                                                        theme::icon_sized(theme::Icon::Image, 13.0)
+                                                            .tint(theme::TEXT_PRIMARY),
                                                     );
-                                                if body.clicked() && !self.busy {
-                                                    self.active_archive = ai;
-                                                    self.row_cache = None;
-                                                    if standalone_open && !standalone_dirty {
+                                                    ui.label(
+                                                        egui::RichText::new(title)
+                                                            .size(12.5)
+                                                            .color(theme::TEXT_PRIMARY),
+                                                    )
+                                                    .on_hover_text(txd_path.display().to_string());
+                                                    if ui
+                                                        .add(
+                                                            egui::Button::image(
+                                                                theme::icon_sized(
+                                                                    theme::Icon::Close,
+                                                                    12.0,
+                                                                )
+                                                                .tint(theme::TEXT_MUTED),
+                                                            )
+                                                            .frame(false),
+                                                        )
+                                                        .on_hover_text(format!(
+                                                            "Закрыть {txd_name}"
+                                                        ))
+                                                        .clicked()
+                                                    {
                                                         close_standalone = true;
                                                     }
-                                                }
-                                                if ui
-                                                    .add(
-                                                        egui::Button::image(
-                                                            theme::icon_sized(
-                                                                theme::Icon::Close,
-                                                                12.0,
-                                                            )
-                                                            .tint(theme::TEXT_MUTED),
-                                                        )
-                                                        .frame(false),
-                                                    )
-                                                    .on_hover_text(format!("Закрыть {name}"))
-                                                    .clicked()
-                                                {
-                                                    close_archive_idx = Some(ai);
-                                                }
+                                                });
                                             });
-                                        });
-                                    if active {
                                         let r = resp_frame.response.rect;
-                                        let accent_color = if dirty {
+                                        let accent_color = if standalone_dirty {
                                             theme::STATUS_MODIFIED
                                         } else {
                                             theme::ACCENT
@@ -322,103 +482,48 @@ impl Browser {
                                             Stroke::new(2.0_f32, accent_color),
                                         );
                                     }
-                                }
-                                if let Some(txd_path) = &self.standalone_txd
-                                    && standalone_open
-                                {
-                                    let txd_name = txd_path
-                                        .file_name()
-                                        .unwrap_or_default()
-                                        .to_string_lossy();
-                                    let title = if standalone_dirty {
-                                        format!("{txd_name} *")
-                                    } else {
-                                        txd_name.as_ref().to_owned()
-                                    };
-                                    let resp_frame = egui::Frame::new()
-                                        .fill(theme::BG_PANEL)
-                                        .inner_margin(Margin::symmetric(8, 4))
-                                        .show(ui, |ui| {
-                                            ui.horizontal(|ui| {
-                                                ui.spacing_mut().item_spacing.x = 5.0;
-                                                ui.add(
-                                                    theme::icon_sized(theme::Icon::Image, 13.0)
-                                                        .tint(theme::TEXT_PRIMARY),
-                                                );
-                                                ui.label(
-                                                    egui::RichText::new(title)
-                                                        .size(12.5)
-                                                        .color(theme::TEXT_PRIMARY),
-                                                )
-                                                .on_hover_text(txd_path.display().to_string());
-                                                if ui
-                                                    .add(
-                                                        egui::Button::image(
-                                                            theme::icon_sized(
-                                                                theme::Icon::Close,
-                                                                12.0,
-                                                            )
-                                                            .tint(theme::TEXT_MUTED),
-                                                        )
-                                                        .frame(false),
-                                                    )
-                                                    .on_hover_text(format!("Закрыть {txd_name}"))
-                                                    .clicked()
-                                                {
-                                                    close_standalone = true;
-                                                }
-                                            });
-                                        });
-                                    let r = resp_frame.response.rect;
-                                    let accent_color = if standalone_dirty {
-                                        theme::STATUS_MODIFIED
-                                    } else {
-                                        theme::ACCENT
-                                    };
-                                    ui.painter().line_segment(
-                                        [r.left_top(), r.right_top()],
-                                        Stroke::new(2.0_f32, accent_color),
-                                    );
-                                }
-                                if theme::icon_button(
-                                    ui,
-                                    theme::Icon::Plus,
-                                    "Добавить ещё IMG-архивы",
-                                    !self.busy,
-                                )
-                                .clicked()
-                                {
-                                    *command = Some(Command::AddArchive);
-                                }
+                                    if theme::icon_button(
+                                        ui,
+                                        theme::Icon::Plus,
+                                        "Добавить ещё IMG-архивы",
+                                        !self.busy,
+                                    )
+                                    .clicked()
+                                    {
+                                        *command = Some(Command::AddArchive);
+                                    }
+                                });
                             });
-                        });
-                } else {
-                    ui.horizontal(|ui| {
-                        if theme::icon_button(
-                            ui,
-                            theme::Icon::ArrowUp,
-                            "На уровень вверх (Alt+Up)",
-                            !self.busy,
-                        )
-                        .clicked()
-                        {
-                            *command = Some(Command::Up);
-                        }
-                        let response = ui.add_sized(
-                            [(ui.available_width() - 4.0).max(120.0), theme::CONTROL_H],
-                            egui::TextEdit::singleline(&mut self.address)
-                                .id_salt("folder_address")
-                                .hint_text("Путь к папке, IMG или TXD…"),
-                        );
-                        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            let path = PathBuf::from(self.address.trim_matches('"'));
-                            if path.is_dir() {
-                                self.browse(path, ctx);
-                            } else {
-                                self.open(path, ctx);
+                    } else {
+                        ui.horizontal(|ui| {
+                            if theme::icon_button(
+                                ui,
+                                theme::Icon::ArrowUp,
+                                "На уровень вверх (Alt+Up)",
+                                !self.busy,
+                            )
+                            .clicked()
+                            {
+                                *command = Some(Command::Up);
                             }
-                        }
-                    });
+                            let response = ui.add_sized(
+                                [(ui.available_width() - 4.0).max(120.0), theme::CONTROL_H],
+                                egui::TextEdit::singleline(&mut self.address)
+                                    .id_salt("folder_address")
+                                    .hint_text("Путь к папке, IMG или TXD…"),
+                            );
+                            if response.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                            {
+                                let path = PathBuf::from(self.address.trim_matches('"'));
+                                if path.is_dir() {
+                                    self.browse(path, ctx);
+                                } else {
+                                    self.open(path, ctx);
+                                }
+                            }
+                        });
+                    }
                 }
             });
         if let Some(idx) = close_archive_idx {
@@ -436,6 +541,7 @@ impl Browser {
     ) {
         let has_archives = !self.archives.is_empty();
         let standalone_dirty = self.txd_editor.as_ref().is_some_and(|e| e.disk_dirty);
+        #[allow(unused_variables)]
         let total_items: usize = if has_archives {
             if self.all_tabs {
                 self.archives.iter().map(|a| a.entries().len()).sum()
@@ -479,10 +585,15 @@ impl Browser {
                     if self.busy {
                         ui.spinner();
                     }
-                    ui.label(
-                        egui::RichText::new(&self.status)
+                    let status_text = self.status.clone();
+                    #[cfg(feature = "mods")]
+                    let status_text = if self.mode == crate::AppMode::Mods {
+                        self.mod_manager.banner_message.as_ref().map(|(message, _)| message.clone()).unwrap_or_else(|| "Изменения набора вступают в силу после применения или запуска игры.".into())
+                    } else {status_text};
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(status_text)
                             .size(12.0)
-                            .color(theme::TEXT_SECONDARY),
+                            .color(theme::TEXT_SECONDARY)).truncate(),
                     );
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                         if standalone_dirty {
@@ -522,14 +633,11 @@ impl Browser {
                             {
                                 *command = Some(Command::Save);
                             }
-                            let label = if self.changes_open {
-                                format!("Правки: {} ▲", self.edits.len())
-                            } else {
-                                format!("Правки: {} ▼", self.edits.len())
-                            };
+                            let label = format!("Правки: {}", self.edits.len());
                             if ui
                                 .add(
-                                    egui::Button::new(
+                                    egui::Button::image_and_text(
+                                        theme::direction_icon(self.changes_open),
                                         egui::RichText::new(label)
                                             .size(12.0)
                                             .color(theme::STATUS_MODIFIED),
@@ -544,15 +652,35 @@ impl Browser {
                             }
                             ui.separator();
                         }
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "Выделено: {}  ·  Всего: {}",
-                                self.selection.len(),
-                                theme::format_thousands(total_items as u64)
-                            ))
-                            .size(12.0)
-                            .color(theme::TEXT_SECONDARY),
-                        );
+                        #[cfg(feature = "mods")]
+                        if self.mode == crate::AppMode::Mods {
+                            let total = self.mod_manager.registry.mods().len();
+                            let active = self
+                                .mod_manager
+                                .registry
+                                .mods()
+                                .iter()
+                                .filter(|m| m.enabled)
+                                .count();
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Выбрано: {} из {}",
+                                    active, total
+                                ))
+                                .size(12.0)
+                                .color(theme::TEXT_SECONDARY),
+                            );
+                        } else {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Выделено: {}  ·  Всего: {}",
+                                    self.selection.len(),
+                                    theme::format_thousands(total_items as u64)
+                                ))
+                                .size(12.0)
+                                .color(theme::TEXT_SECONDARY),
+                            );
+                        }
                     });
                 });
             });
@@ -567,33 +695,40 @@ impl Browser {
                 .max_height(300.0)
                 .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -38.0])
                 .show(ctx, |ui| {
-                    egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-                        for (i, edit) in self.edits.iter().enumerate() {
-                            ui.horizontal(|ui| {
-                                let (tag, color, desc) = match edit {
-                                    Edit::Replace { name, .. } => {
-                                        ("[зам]", theme::STATUS_MODIFIED, name.clone())
-                                    }
-                                    Edit::Remove { name } => {
-                                        ("[удал]", theme::STATUS_REMOVED, name.clone())
-                                    }
-                                    Edit::Add { source } => (
-                                        "[нов]",
-                                        theme::STATUS_ADDED,
-                                        source.display().to_string(),
-                                    ),
-                                };
-                                ui.label(egui::RichText::new(tag).size(11.5).color(color));
-                                ui.add(egui::Label::new(desc).truncate());
-                                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                                    if ui.add(egui::Button::new("Отменить").frame(false)).clicked()
-                                    {
-                                        undo = Some(i);
-                                    }
+                    egui::ScrollArea::vertical()
+                        .max_height(220.0)
+                        .show(ui, |ui| {
+                            for (i, edit) in self.edits.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    let (tag, color, desc) = match edit {
+                                        Edit::Replace { name, .. } => {
+                                            ("[зам]", theme::STATUS_MODIFIED, name.clone())
+                                        }
+                                        Edit::Remove { name } => {
+                                            ("[удал]", theme::STATUS_REMOVED, name.clone())
+                                        }
+                                        Edit::Add { source } => (
+                                            "[нов]",
+                                            theme::STATUS_ADDED,
+                                            source.display().to_string(),
+                                        ),
+                                    };
+                                    ui.label(egui::RichText::new(tag).size(11.5).color(color));
+                                    ui.add(egui::Label::new(desc).truncate());
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(Align::Center),
+                                        |ui| {
+                                            if ui
+                                                .add(egui::Button::new("Отменить").frame(false))
+                                                .clicked()
+                                            {
+                                                undo = Some(i);
+                                            }
+                                        },
+                                    );
                                 });
-                            });
-                        }
-                    });
+                            }
+                        });
                 });
             self.changes_open = open;
             if let Some(i) = undo {

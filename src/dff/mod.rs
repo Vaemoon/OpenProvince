@@ -8,7 +8,9 @@ use self::{
         Frame, atomic_norm_basis, atomic_pos_matrix, child, chunks, f32_at, geometry,
         left_wheel_part_ancestor, transform, u32_at, wheel_ancestor,
     },
-    components::{base_frame_name, classify_component, is_permanent_damage_or_lod, is_restyle_name},
+    components::{
+        base_frame_name, classify_component, is_permanent_damage_or_lod, is_restyle_name,
+    },
     doors::{finalize_interactables, interactable_ancestor},
     skin::{accumulate_skin_centroids, orient_ped_upright},
 };
@@ -224,10 +226,9 @@ pub fn decode_with_wheels(mut bytes: &[u8], wheel_sizes: [f32; 2]) -> Result<Mod
     {
         for (ext_id, ext_data) in chunks(extension)? {
             if ext_id == 0x0253_f2fe {
-                frame.name = String::from_utf8_lossy(
-                    ext_data.split(|b| *b == 0).next().unwrap_or_default(),
-                )
-                .to_ascii_lowercase();
+                frame.name =
+                    String::from_utf8_lossy(ext_data.split(|b| *b == 0).next().unwrap_or_default())
+                        .to_ascii_lowercase();
             } else if ext_id == 0x011e && ext_data.len() >= 12 {
                 let node_id = u32_at(ext_data, 4)?;
                 let num_nodes = u32_at(ext_data, 8)? as usize;
@@ -249,7 +250,11 @@ pub fn decode_with_wheels(mut bytes: &[u8], wheel_sizes: [f32; 2]) -> Result<Mod
             }
         }
     }
-    let max_bone = hanim_bones.iter().map(|&(_, i)| i as usize).max().unwrap_or(0);
+    let max_bone = hanim_bones
+        .iter()
+        .map(|&(_, i)| i as usize)
+        .max()
+        .unwrap_or(0);
     let mut bone_to_frame: Vec<Option<usize>> = if hanim_bones.is_empty() {
         Vec::new()
     } else {
@@ -386,8 +391,8 @@ pub fn decode_with_wheels(mut bytes: &[u8], wheel_sizes: [f32; 2]) -> Result<Mod
                 })
                 .collect()
         };
-        let norm_basis = (!geometry.triangles.is_empty())
-            .then(|| atomic_norm_basis(frame, wheel, &frames));
+        let norm_basis =
+            (!geometry.triangles.is_empty()).then(|| atomic_norm_basis(frame, wheel, &frames));
         let mut norm_cache: Vec<Option<[f32; 3]>> = vec![None; geometry.normals.len()];
         if !is_vehicle && !bone_to_frame.is_empty() {
             accumulate_skin_centroids(
@@ -477,9 +482,7 @@ pub fn decode_with_wheels(mut bytes: &[u8], wheel_sizes: [f32; 2]) -> Result<Mod
             for (idx, face) in model.faces[face_start..].iter().cloned().enumerate() {
                 entry.push((face_start + idx, face));
             }
-        } else if has_wheel_dummies
-            && let Some(part) = left_wheel_part_ancestor(frame, &frames)?
-        {
+        } else if has_wheel_dummies && let Some(part) = left_wheel_part_ancestor(frame, &frames)? {
             standalone_left_wheels
                 .entry(part)
                 .or_default()
@@ -589,8 +592,8 @@ pub fn decode_with_wheels(mut bytes: &[u8], wheel_sizes: [f32; 2]) -> Result<Mod
             } else {
                 wheel_sizes[1]
             };
-            let wheel_component = classify_component(index as i32, &frames, has_restyle)
-                .map(|spec| {
+            let wheel_component =
+                classify_component(index as i32, &frames, has_restyle).map(|spec| {
                     if let Some(&idx) = component_map.get(&spec.key) {
                         idx
                     } else {
@@ -740,6 +743,11 @@ pub struct View {
 }
 
 impl View {
+    #[cfg(debug_assertions)]
+    pub(crate) fn configure_capture(&mut self) {
+        self.renderer.configure_capture();
+    }
+
     pub fn new(model: Model) -> Self {
         Self {
             renderer: crate::gpu::View::new(model),
@@ -755,7 +763,13 @@ impl View {
         vinyl_on_primary: bool,
         extra_controls: impl FnOnce(&mut egui::Ui),
     ) -> Option<egui::Response> {
-        self.renderer
-            .show(ui, textures, paintjob, vinyl, vinyl_on_primary, extra_controls)
+        self.renderer.show(
+            ui,
+            textures,
+            paintjob,
+            vinyl,
+            vinyl_on_primary,
+            extra_controls,
+        )
     }
 }

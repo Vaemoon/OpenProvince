@@ -1,0 +1,15 @@
+[package]
+name = "province-mods"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+province-archive.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -86,6 +86,17 @@ fn stage_document(document: &Document) -> Result<PathBuf, String> {
 }
 
 impl Editor {
+    #[cfg(debug_assertions)]
+    pub(crate) fn configure_capture(&mut self) {
+        if let Ok(name) = std::env::var("OPENPROVINCE_CAPTURE_TEXTURE")
+            && let Some(index) = self.entries.iter().position(|entry| entry.name == name)
+            && index != self.selected
+        {
+            self.selected = index;
+            self.image = None;
+        }
+    }
+
     pub fn mark_saved(&mut self) {
         self.status = "Изменения сохранены в IMG.".into();
     }
@@ -208,7 +219,8 @@ impl Editor {
                                 self.disk_dirty = true;
                                 self.status = "Правки TXD готовы. Сохраните файл: Ctrl+S.".into();
                             } else {
-                                self.status = "Правки TXD подготовлены. Сохраните IMG: Ctrl+S.".into();
+                                self.status =
+                                    "Правки TXD подготовлены. Сохраните IMG: Ctrl+S.".into();
                                 staged = path;
                             }
                         }
@@ -727,13 +739,8 @@ impl Editor {
                     .id_salt("txd_filter")
                     .hint_text("Фильтр…"),
             );
-            if theme::icon_button(
-                ui,
-                theme::Icon::Close,
-                "Очистить",
-                !self.filter.is_empty(),
-            )
-            .clicked()
+            if theme::icon_button(ui, theme::Icon::Close, "Очистить", !self.filter.is_empty())
+                .clicked()
             {
                 self.filter.clear();
             }
@@ -803,18 +810,21 @@ impl Editor {
                                 ui.vertical(|ui| {
                                     ui.spacing_mut().item_spacing.y = 1.0;
                                     ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(&entry.name).color(if is_selected {
+                                        egui::Label::new(egui::RichText::new(&entry.name).color(
+                                            if is_selected {
                                                 Color32::WHITE
                                             } else {
                                                 theme::TEXT_PRIMARY
-                                            }),
-                                        )
+                                            },
+                                        ))
                                         .truncate(),
                                     );
                                     ui.label(
                                         egui::RichText::new(if entry.supported {
-                                            format!("{}×{} · {}", entry.width, entry.height, entry.format)
+                                            format!(
+                                                "{}×{} · {}",
+                                                entry.width, entry.height, entry.format
+                                            )
                                         } else {
                                             format!(
                                                 "{}×{} · {} · только чтение",
@@ -822,11 +832,13 @@ impl Editor {
                                             )
                                         })
                                         .size(11.5)
-                                        .color(if is_selected {
-                                            Color32::from_rgb(205, 215, 230)
-                                        } else {
-                                            theme::TEXT_SECONDARY
-                                        }),
+                                        .color(
+                                            if is_selected {
+                                                Color32::from_rgb(205, 215, 230)
+                                            } else {
+                                                theme::TEXT_SECONDARY
+                                            },
+                                        ),
                                     );
                                 });
                             });
@@ -929,8 +941,7 @@ impl Editor {
                         if self.renaming && editable {
                             let response = ui.add_sized(
                                 [(left_w - 92.0).max(60.0), theme::CONTROL_H],
-                                egui::TextEdit::singleline(&mut self.rename)
-                                    .id_salt("txd_rename"),
+                                egui::TextEdit::singleline(&mut self.rename).id_salt("txd_rename"),
                             );
                             if ui
                                 .add(
@@ -1009,7 +1020,8 @@ impl Editor {
                 _ => "Канал: RGBA",
             };
             theme::panel_menu(ui, channel_label, |ui| {
-                for (ch, label) in [(0, "RGBA"), (1, "RGB (без альфы)"), (2, "Альфа-маска")] {
+                for (ch, label) in [(0, "RGBA"), (1, "RGB (без альфы)"), (2, "Альфа-маска")]
+                {
                     if ui.radio_value(&mut self.channel, ch, label).clicked() {
                         ui.close_menu();
                     }
@@ -1028,7 +1040,8 @@ impl Editor {
                 _ => "Фон: Сетка",
             };
             theme::panel_menu(ui, backdrop_label, |ui| {
-                for (bg, label) in [(0, "Сетка"), (1, "Чёрный"), (2, "Серый"), (3, "Белый")] {
+                for (bg, label) in [(0, "Сетка"), (1, "Чёрный"), (2, "Серый"), (3, "Белый")]
+                {
                     if ui.radio_value(&mut self.backdrop, bg, label).clicked() {
                         ui.close_menu();
                     }

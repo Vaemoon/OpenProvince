@@ -397,6 +397,24 @@ impl View {
             resources: Arc::new(Mutex::new(Ok(None))),
         }
     }
+    #[cfg(debug_assertions)]
+    pub(crate) fn configure_capture(&mut self) {
+        if std::env::var_os("OPENPROVINCE_CAPTURE_DOORS").is_some() {
+            for (index, part) in self.model.interactables.iter().enumerate() {
+                if part.label == "ПЛ дверь" || part.label == "ПП дверь" {
+                    self.settings.part_open[index] = 1.0;
+                    self.settings.part_animated[index] = 1.0;
+                }
+            }
+        }
+        if let Ok(value) = std::env::var("OPENPROVINCE_CAPTURE_YAW")
+            && let Ok(yaw) = value.parse::<f32>()
+        {
+            self.settings.yaw = yaw;
+            self.settings.pitch = -0.12;
+        }
+    }
+
     fn reset_camera(&mut self) {
         self.settings.yaw = 2.5;
         self.settings.pitch = -0.3;
@@ -447,7 +465,8 @@ impl View {
                         .size(11.5)
                         .color(theme::TEXT_SECONDARY),
                 );
-                for (preset, label) in [(0, "Тёмный"), (1, "Серый"), (2, "Светлый")] {
+                for (preset, label) in [(0, "Тёмный"), (1, "Серый"), (2, "Светлый")]
+                {
                     ui.radio_value(&mut self.settings.bg_preset, preset, label);
                 }
             });
@@ -615,8 +634,14 @@ impl View {
             egui::Sense::click_and_drag(),
         );
         let (bg_color, hud_text) = match self.settings.bg_preset {
-            1 => (Color32::from_rgb(88, 92, 98), Color32::from_rgb(232, 234, 238)),
-            2 => (Color32::from_rgb(214, 217, 222), Color32::from_rgb(45, 47, 52)),
+            1 => (
+                Color32::from_rgb(88, 92, 98),
+                Color32::from_rgb(232, 234, 238),
+            ),
+            2 => (
+                Color32::from_rgb(214, 217, 222),
+                Color32::from_rgb(45, 47, 52),
+            ),
             _ => (theme::BG_VIEWPORT, theme::TEXT_SECONDARY),
         };
         ui.painter().rect_filled(rect, 0.0, bg_color);
@@ -646,7 +671,9 @@ impl View {
         }
         if response.double_clicked()
             || (!ui.ctx().wants_keyboard_input()
-                && ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::R)))
+                && ui
+                    .ctx()
+                    .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::R)))
         {
             self.reset_camera();
         }

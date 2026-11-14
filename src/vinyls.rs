@@ -222,13 +222,15 @@ pub fn load_texture(entry: &VinylEntry) -> Result<txd::Texture, String> {
             let mut tile_size = (0u32, 0u32);
             for (i, path) in parts.iter().enumerate() {
                 let bytes = fs::read(path).map_err(|e| e.to_string())?;
-                let tile =
-                    image::load_from_memory_with_format(&bytes, image::ImageFormat::Dds)
-                        .map_err(|e| e.to_string())?
-                        .into_rgba8();
+                let tile = image::load_from_memory_with_format(&bytes, image::ImageFormat::Dds)
+                    .map_err(|e| e.to_string())?
+                    .into_rgba8();
                 if i == 0 {
                     tile_size = tile.dimensions();
-                    if tile_size.0 == 0 || tile_size.1 == 0 || tile_size.0 > 1024 || tile_size.1 > 2048
+                    if tile_size.0 == 0
+                        || tile_size.1 == 0
+                        || tile_size.0 > 1024
+                        || tile_size.1 > 2048
                     {
                         return Err("Некорректный размер тайла винила".into());
                     }
